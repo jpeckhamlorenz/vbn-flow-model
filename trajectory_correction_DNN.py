@@ -15,18 +15,21 @@ else:
     print("MPS device not found.")
 
 plt.close('all')
-
+from constants.filepath import PROJECT_PATH
+import os
 
 # %%
 
-location = '/Users/james/Desktop/sim_samples/'
-workspace_list = glob(location + '*.npz')
+location = os.path.join(PROJECT_PATH, 'data', 'sim_samples')
+workspace_list = glob(os.path.join(location,'*.npz'))
 
 residuals = []
 analytical_data = []
 command_data = []
 
-print("Loading data...")
+
+# print loading data in red text
+print("\033[91mLoading data...\033[0m")
 for file in tqdm(workspace_list):
     saved_data = np.load(file)
     Q_out_sim, Q_com_sim, P_p_sim, t_sim = saved_data['Qo_x'], saved_data['Qcom_x'], saved_data['Pp_x'], saved_data['time']
@@ -35,10 +38,11 @@ for file in tqdm(workspace_list):
     residuals.append(np.interp(t_vbn[t_vbn > 0.2], t_sim, Q_out_sim) - Q_out_vbn[t_vbn > 0.2])
     analytical_data.append(Q_out_vbn[t_vbn > 0.2])
     command_data.append(Q_com_vbn[t_vbn > 0.2])
-
 residuals = np.concatenate(residuals) * 1e9
 analytical_data = np.concatenate(analytical_data) * 1e9
 command_data = np.concatenate(command_data) * 1e9
+# print finished loading data in green text
+print("\033[92mFinished loading data.\033[0m")
 
 # %%
 

@@ -44,7 +44,7 @@ def flow_predictor(
         raise SystemExit("Error: pump not recognized")
 
     # %%
-    input_motor = integrate.cumtrapz(input_flowrate / pmp.EXTRUSION_RATIO, ts, initial=0.0)
+    input_motor = integrate.cumulative_trapezoid(input_flowrate / pmp.EXTRUSION_RATIO, ts, initial=0.0)
 
     # %% constants used in solver
 
