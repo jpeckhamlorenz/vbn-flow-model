@@ -7,12 +7,13 @@ from flow_predictor import flow_predictor
 from tqdm import tqdm
 from pathgen import training_twosteps
 
-if torch.backends.mps.is_available():
-    mps_device = torch.device("cpu")
-    # x = torch.ones(1, device=mps_device)
-    # print(x)
-else:
-    print("MPS device not found.")
+# if torch.backends.mps.is_available():
+#     mps_device = torch.device("cpu")
+#     # x = torch.ones(1, device=mps_device)
+#     # print(x)
+# else:
+#     print("MPS device not found.")
+mps_device = torch.device("cpu")
 
 plt.close('all')
 from constants.filepath import PROJECT_PATH
@@ -92,7 +93,7 @@ epochs = 500
 model.train()
 
 print("Training model...")
-for epoch in range(epochs):
+for epoch in tqdm(range(epochs)):
 
     # Forward pass
     predictions = model(input_features)
