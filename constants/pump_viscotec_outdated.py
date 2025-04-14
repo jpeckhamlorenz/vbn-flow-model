@@ -7,13 +7,13 @@
 # =============================================================================
 
 # M_ROTOR = 0.001  # mass of rotor [kg]
-M_ROTOR = 0.002  # mass of rotor [kg]
+M_ROTOR = 0.005  # mass of rotor [kg]
 
-D_C = 0.0051  # coupler diameter [m]
-L_C = 0.019  # coupler length [m]
+D_C = 0.0052  # coupler diameter [m]
+L_C = 0.017  # coupler length [m]
 T_C = 300  # coupler temperature [K]
-RHO_C = 1500  ## coupler density [kg/m^3]
-MC_C = 0.70  ## coupler molecular weight of cross-linked strand [kg/mol]
+RHO_C = 1700  ## coupler density [kg/m^3]
+MC_C = 0.60  ## coupler molecular weight of cross-linked strand [kg/mol]
 R = 8.314  # gas constant [kg⋅m^2⋅s^−2⋅K^−1⋅mol^−1]
 
 MU_FRIC = 0.4  ## coefficient of friction between rotor and stator [1]

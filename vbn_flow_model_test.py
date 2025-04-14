@@ -7,16 +7,18 @@ import itertools
 import torch
 from glob import glob
 
-if torch.backends.mps.is_available():
-    mps_device = torch.device("mps")
-    # x = torch.ones(1, device=mps_device)
-    # print(x)
-else:
-    print("MPS device not found.")
+
+# if torch.backends.mps.is_available():
+#     mps_device = torch.device("mps")
+#     # x = torch.ones(1, device=mps_device)
+#     # print(x)
+# else:
+#     print("MPS device not found.")
 
 plt.close('all')
 
-from flow_predictor import flow_predictor, ResidualModel
+# from flow_predictor import flow_predictor
+from flow_predictor_hybrid import flow_predictor_lstm
 
 #%%
 
@@ -47,18 +49,18 @@ from flow_predictor import flow_predictor, ResidualModel
 
 #%%
 
-# corner_flowmatch_test = corner_flowmatch(
-#         dt = 0.001,  # time step [s]
-#         a_tool = 100,  # toolhead acceleration [mm/s^2]
-#         v_tool = 25,  # toolhead velocity [mm/s]
-#         precorner_dist = 180,  # straight-line distance before the corner [mm] (TYP: 180)
-#         postcorner_dist = 30,  # straight-line distance after the corner [mm]  (TYP: 30)
-#         layer_height = 0.15,  # layer height [mm]
-#         nominal_beadwidth = 0.3,  # diameter of the nozzle [mm]
-#         pump = 'pump_viscotec_outdated'
-# )
+corner_flowmatch_test = corner_flowmatch(
+        dt = 0.001,  # time step [s]
+        a_tool = 100,  # toolhead acceleration [mm/s^2]
+        v_tool = 25,  # toolhead velocity [mm/s]
+        precorner_dist = 180,  # straight-line distance before the corner [mm] (TYP: 180)
+        postcorner_dist = 30,  # straight-line distance after the corner [mm]  (TYP: 30)
+        layer_height = 0.15,  # layer height [mm]
+        nominal_beadwidth = 0.3,  # diameter of the nozzle [mm]
+        pump = 'pump_viscotec_outdated'
+)
 
-# corner_flowmatch_test.pathgen()
+corner_flowmatch_test.pathgen()
 # corner_flowmatch_test.flow_predictor()
 # corner_flowmatch_test.test_plots()
 # corner_flowmatch_test.corner_plots()
@@ -144,114 +146,146 @@ from flow_predictor import flow_predictor, ResidualModel
 
 #%%
 
-test = training_twosteps(flowrate_magnitudes = [[0.75, 0.001], [0.1, 0.001], [0.86, 0.001]],
-                         flowrate_times = [[0.0001, 0.01], [17, 18], [19.5, 33]],
-                         beadwidth_magnitudes = [[]],
-                         beadwidth_times = [[]],
-                         dt = 0.001,
-                         tmax=40)
-
-# test = training_corner(
-#         a_tool=100,
-#         v_tool=15,
-#         precorner_dist=210,
-#         postcorner_dist=90,
-#         pulse_magnitude=0.696,
-#         pulse_dists=[55, 72],
-#         layer_height=0.15,
-#         nominal_beadwidth=0.25,
-#         dt = 0.001,
-# )
-
-# test = corner_flowmatch(
-#         dt = 0.001,  # time step [s]
-#         a_tool = 100,  # toolhead acceleration [mm/s^2]
-#         v_tool = 25,  # toolhead velocity [mm/s]
-#         precorner_dist = 180,  # straight-line distance before the corner [mm] (TYP: 180)
-#         postcorner_dist = 30,  # straight-line distance after the corner [mm]  (TYP: 30)
-#         layer_height = 0.15,  # layer height [mm]
-#         nominal_beadwidth = 0.3,  # diameter of the nozzle [mm]
-#         pump = 'pump_viscotec_outdated'
-# )
-
-
-test_t_input, test_Q_input, test_W_input = test.pathgen()
-
-
-
-test_t, test_W, test_Q_com, test_Q_out = flow_predictor(test_t_input, test_Q_input, test_W_input)
-
-
-IC_cutoff = 0.2
-test_W = test_W[test_t > IC_cutoff]
-test_Q_com = test_Q_com[test_t > IC_cutoff]
-test_Q_out = test_Q_out[test_t > IC_cutoff]
-test_t = test_t[test_t > IC_cutoff]
-
-
-
-
-test_analytical = test_Q_out * 1e9
-test_command = test_Q_com * 1e9
-test_combined = np.stack((test_command, test_analytical), axis=1)
-test_input = torch.tensor(test_combined, dtype=torch.float32, device=mps_device)
-
-
-
-# class ResidualModel(torch.nn.Module):
-#     def __init__(self):
-#         super(ResidualModel, self).__init__()
-#         # self.fc1 = torch.nn.Linear(2, 64)  # Input layer
-#         # self.fc2 = torch.nn.Linear(64, 256)  # Hidden layer
-#         # self.fc3 = torch.nn.Linear(256, 64)  # Output layer
-#         # self.fc4 = torch.nn.Linear(64, 1)  # Output layer
+# test = training_twosteps(flowrate_magnitudes = [[0.75, 0.001], [0.1, 0.001], [0.86, 0.001]],
+#                          flowrate_times = [[0.0001, 0.01], [17, 18], [19.5, 33]],
+#                          beadwidth_magnitudes = [[]],
+#                          beadwidth_times = [[]],
+#                          dt = 0.001,
+#                          tmax=40)
 #
-#         self.fc1 = torch.nn.Linear(2, 64)  # Input layer
-#         self.fc2 = torch.nn.Linear(64, 512)  # Hidden layer
-#         self.fc3 = torch.nn.Linear(512, 1024)  # Hidden layer
-#         self.fc4 = torch.nn.Linear(1024, 512)  # Output layer
-#         self.fc5 = torch.nn.Linear(512, 64)  # Output layer
-#         self.fc6 = torch.nn.Linear(64, 1)  # Output layer
+# # test = training_corner(
+# #         a_tool=100,
+# #         v_tool=15,
+# #         precorner_dist=210,
+# #         postcorner_dist=90,
+# #         pulse_magnitude=0.696,
+# #         pulse_dists=[55, 72],
+# #         layer_height=0.15,
+# #         nominal_beadwidth=0.25,
+# #         dt = 0.001,
+# # )
 #
-#     def forward(self, x):
-#         x = torch.relu(self.fc1(x))
-#         x = torch.relu(self.fc2(x))
-#         x = torch.relu(self.fc3(x))
-#         x = torch.relu(self.fc4(x))
-#         x = torch.relu(self.fc5(x))
-#         return self.fc6(x)
-#
-#     def traj_correction(self, traj_input):
-#         self.load_state_dict(torch.load('trajectory_correction_DNN_state_v1.pth', weights_only = True))
-#         self.eval()
-#         with torch.no_grad():
-#             output = model(traj_input) * 1e-9
-#         Q_out_correction = (output).cpu().numpy().reshape(-1)
-#         Q_out_total = test_Q_out + Q_out_correction
-#
-#         return Q_out_total, Q_out_correction
-
-
-model = ResidualModel()
-model.to(mps_device)
-Q_out_total, test_result = model.traj_correction(test_input, test_Q_out)
-
-# model.eval()
-#
-# with torch.no_grad():
-#     output = model(test_input) * 1e-9
+# # test = corner_flowmatch(
+# #         dt = 0.001,  # time step [s]
+# #         a_tool = 100,  # toolhead acceleration [mm/s^2]
+# #         v_tool = 25,  # toolhead velocity [mm/s]
+# #         precorner_dist = 180,  # straight-line distance before the corner [mm] (TYP: 180)
+# #         postcorner_dist = 30,  # straight-line distance after the corner [mm]  (TYP: 30)
+# #         layer_height = 0.15,  # layer height [mm]
+# #         nominal_beadwidth = 0.3,  # diameter of the nozzle [mm]
+# #         pump = 'pump_viscotec_outdated'
+# # )
 #
 #
-# test_result = (output).cpu().numpy().reshape(-1)
-# Q_out_total = test_Q_out + test_result
+# test_t_input, test_Q_input, test_W_input = test.pathgen()
+#
+#
+#
+# test_t, test_W, test_Q_com, test_Q_out = flow_predictor(test_t_input, test_Q_input, test_W_input)
+#
+#
+# IC_cutoff = 0.2
+# test_W = test_W[test_t > IC_cutoff]
+# test_Q_com = test_Q_com[test_t > IC_cutoff]
+# test_Q_out = test_Q_out[test_t > IC_cutoff]
+# test_t = test_t[test_t > IC_cutoff]
+#
+#
+#
+#
+# test_analytical = test_Q_out * 1e9
+# test_command = test_Q_com * 1e9
+# test_combined = np.stack((test_command, test_analytical), axis=1)
+# test_input = torch.tensor(test_combined, dtype=torch.float32, device=mps_device)
+#
+#
+#
+# # class ResidualModel(torch.nn.Module):
+# #     def __init__(self):
+# #         super(ResidualModel, self).__init__()
+# #         # self.fc1 = torch.nn.Linear(2, 64)  # Input layer
+# #         # self.fc2 = torch.nn.Linear(64, 256)  # Hidden layer
+# #         # self.fc3 = torch.nn.Linear(256, 64)  # Output layer
+# #         # self.fc4 = torch.nn.Linear(64, 1)  # Output layer
+# #
+# #         self.fc1 = torch.nn.Linear(2, 64)  # Input layer
+# #         self.fc2 = torch.nn.Linear(64, 512)  # Hidden layer
+# #         self.fc3 = torch.nn.Linear(512, 1024)  # Hidden layer
+# #         self.fc4 = torch.nn.Linear(1024, 512)  # Output layer
+# #         self.fc5 = torch.nn.Linear(512, 64)  # Output layer
+# #         self.fc6 = torch.nn.Linear(64, 1)  # Output layer
+# #
+# #     def forward(self, x):
+# #         x = torch.relu(self.fc1(x))
+# #         x = torch.relu(self.fc2(x))
+# #         x = torch.relu(self.fc3(x))
+# #         x = torch.relu(self.fc4(x))
+# #         x = torch.relu(self.fc5(x))
+# #         return self.fc6(x)
+# #
+# #     def traj_correction(self, traj_input):
+# #         self.load_state_dict(torch.load('trajectory_correction_DNN_state_v1.pth', weights_only = True))
+# #         self.eval()
+# #         with torch.no_grad():
+# #             output = model(traj_input) * 1e-9
+# #         Q_out_correction = (output).cpu().numpy().reshape(-1)
+# #         Q_out_total = test_Q_out + Q_out_correction
+# #
+# #         return Q_out_total, Q_out_correction
+#
+#
+# model = ResidualModel()
+# model.to(mps_device)
+# Q_out_total, test_result = model.traj_correction(test_input, test_Q_out)
+#
+# # model.eval()
+# #
+# # with torch.no_grad():
+# #     output = model(test_input) * 1e-9
+# #
+# #
+# # test_result = (output).cpu().numpy().reshape(-1)
+# # Q_out_total = test_Q_out + test_result
+#
+#
+#
+# plt.figure()
+# plt.plot(test_t, test_Q_com, label='Input', color='black', linestyle='--')
+# # plt.plot(test_accel.ts, test_accel.sim_Q_out, label = 'Simulated Data', color = 'red')
+# plt.plot(test_t, test_Q_out, label = 'Analytical Data', color = 'blue')
+# plt.plot(test_t, test_result, label='Residual', color='magenta')
+# plt.plot(test_t, Q_out_total, label='Total', color='red')
+#
+# plt.legend()
 
 
+#%%
 
-plt.figure()
-plt.plot(test_t, test_Q_com, label='Input', color='black', linestyle='--')
-# plt.plot(test_accel.ts, test_accel.sim_Q_out, label = 'Simulated Data', color = 'red')
-plt.plot(test_t, test_Q_out, label = 'Analytical Data', color = 'blue')
-plt.plot(test_t, test_result, label='Residual', color='magenta')
-plt.plot(test_t, Q_out_total, label='Total', color='red')
+# test = training_twosteps(flowrate_magnitudes=[[0.2, 0.001], [0.48, 0.001]],
+#                          flowrate_times=[[0.0001, 4], [7, 16]],
+#                          beadwidth_magnitudes=[[]],
+#                          beadwidth_times=[[]],
+#                          dt=0.001,
+#                          tmax=20)
+time, command, bead = corner_flowmatch_test.pathgen()
 
+prediction, residual, analytical = flow_predictor_lstm(time, command, bead,
+                                                        flowrate_regularization=1e9,
+                                                        model_filename='lstm_residual_model_v7.pth')
+# plot results
+plot_skip = 0.2  # Adjust this to skip more points if needed
+test = plt.figure(figsize=(12, 6))
+plt.plot(time[time > plot_skip], command[time > plot_skip], label='Commanded Flow Rate', color='black', linestyle='--')
+plt.plot(time[time > plot_skip], analytical[time > plot_skip], label='Analytical Flow Rate', color='blue')
+plt.plot(time[time > plot_skip], residual[time > plot_skip], label='Residual Prediction', color='magenta')
+plt.plot(time[time > plot_skip], prediction[time > plot_skip], label='Total Flow Rate', color='green')
+
+plt.xlabel('Time (s)')
+plt.ylabel('Flow Rate (m3/s)')
+plt.title('Flow Rate Prediction')
 plt.legend()
+plt.grid()
+
+# save the figure at 600 dpi
+
+test.savefig('corner_flowmatching_LSTM_test.png', bbox_inches='tight', dpi=600)
