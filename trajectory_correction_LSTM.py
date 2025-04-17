@@ -330,6 +330,6 @@ error_residuals.legend(ax.get_legend_handles_labels()[0],ax.get_legend_handles_l
 # fig_error.savefig('error_histogram.png', bbox_inches='tight', dpi=600)
 # error_residuals.savefig('error_histogram_leg.png', bbox_inches='tight', dpi=600)
 #
-fig_loss.savefig('training_validation_losses.png', bbox_inches='tight', dpi=600)
+# fig_loss.savefig('training_validation_losses.png', bbox_inches='tight', dpi=600)
 
 

@@ -1,0 +1,11 @@
+data/
+archive/
+dataset/
+model_data/
+slides/
+wandb/
+an_data/
+.idea/*
+*.pyc
+*.pth
+.DS_Store
