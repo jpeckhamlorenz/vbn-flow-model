@@ -16,9 +16,9 @@ plt.close('all')
 
 # %%
 
-class ResidualLSTM(torch.nn.Module):
-    def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
-        super(ResidualLSTM, self).__init__()
+class FlowrateLSTM(torch.nn.Module):
+    def __init__(self, input_size=3, hidden_size=128, num_layers=3, output_size=1):
+        super(FlowrateLSTM, self).__init__()
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = torch.nn.Linear(hidden_size, output_size)
 
@@ -57,15 +57,15 @@ class DataModule(pl.LightningDataModule):
             data = np.load(file)
             time = torch.tensor(data['time'], dtype=torch.float32)
             command = torch.tensor(regularization_factor * data['Q_com'], dtype=torch.float32)
-            analytical = torch.tensor(regularization_factor * data['Q_vbn'], dtype=torch.float32)
+
             # todo: generate a dataset that has bead width and load from that instead of making my own bead array
             bead = torch.full_like(time, 0.0029, dtype=torch.float32)
 
-            input_features = torch.stack((time, command, bead, analytical), dim=1)
+            input_features = torch.stack((time, command, bead), dim=1)
             # input_features = torch.stack((command, analytical), dim=1)
-            target_residuals = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
+            target_output = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
 
-            sequences.append((input_features, target_residuals))
+            sequences.append((input_features, target_output))
         return sequences
 
     def _collate_fn(self, batch):
@@ -100,7 +100,7 @@ class DataModule(pl.LightningDataModule):
 class LightningModule(pl.LightningModule):
     def __init__(self, config):  # hidden_size, num_layers, lr):
         super().__init__()
-        self.net = ResidualLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
+        self.net = FlowrateLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
         self.lr = config.lr
 
     #         self.save_hyperparameters()  # **wandb process fail to finish if this is uncommented**
@@ -166,7 +166,8 @@ class LightningModule(pl.LightningModule):
 
 def train_model():
     #     os.environ["WANDB_START_METHOD"] = "thread"'
-    wandb.init(project="VBN-modeling")
+    wandb.init(project="VBN-modeling",
+               notes = "Training LSTM model for flowrate prediction",)
     config = wandb.config
     wandb_logger = WandbLogger()
 
@@ -185,7 +186,7 @@ if __name__ == '__main__':
     sweep_config = {
         'description': 'text for description',
         'method': 'bayes',
-        'name': 'WALR-sweep',
+        'name': 'NALO-sweep',
         'metric': {
             'goal': 'minimize',
             'name': 'validation_loss'
@@ -197,7 +198,6 @@ if __name__ == '__main__':
         },
         'early_terminate': {
             'type': 'hyperband',
-            'max_iter': 40,
             'min_iter': 20,
             's': 2,
         },

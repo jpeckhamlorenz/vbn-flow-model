@@ -66,7 +66,7 @@ def collate_fn(batch):
     return padded_inputs, padded_targets, lengths
 
 class ResidualLSTM(torch.nn.Module):
-    def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
+    def __init__(self, input_size=4, hidden_size=64, num_layers=2, output_size=1):
         super(ResidualLSTM, self).__init__()
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = torch.nn.Linear(hidden_size, output_size)
@@ -96,7 +96,7 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=Fals
 model = ResidualLSTM().to(device)
 criterion = torch.nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-epochs = 100
+epochs = 5
 
 train_epoch_losses = []
 val_epoch_losses = []
@@ -155,7 +155,7 @@ plt.legend()
 
 
 # Save the model
-torch.save(model.state_dict(), 'lstm_residual_model_tmp.pth')
+# torch.save(model.state_dict(), 'lstm_residual_model_tmp.pth')
 
 print("training complete")
 

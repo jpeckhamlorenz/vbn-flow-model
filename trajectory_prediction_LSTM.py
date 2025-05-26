@@ -31,6 +31,8 @@ def load_data(data_path, regularization_factor = 1e9):
         data = np.load(file)
         time = torch.tensor(data['time'], dtype=torch.float32)
         command = torch.tensor(regularization_factor*data['Q_com'], dtype=torch.float32)
+
+        #todo: generate a dataset that has bead width and load from that instead of making my own bead array
         bead = torch.full_like(time, 0.0029, dtype=torch.float32)
 
         input_features = torch.stack((time, command, bead), dim=1)

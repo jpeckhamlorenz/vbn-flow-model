@@ -9,3 +9,4 @@ an_data/
 *.pyc
 *.pth
 .DS_Store
+*.ckpt
