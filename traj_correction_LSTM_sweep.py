@@ -164,12 +164,14 @@ class LightningModule(pl.LightningModule):
         return optimizer
 
 
-def train_model():
+def train_model(group_name: str = None,
+                description: str = None):
     #     os.environ["WANDB_START_METHOD"] = "thread"'
-    wandb.init(project="VBN-modeling")
+    wandb.init(project="VBN-modeling",
+               notes = description,
+               group = group_name)
     config = wandb.config
     wandb_logger = WandbLogger()
-
     data = DataModule(config)
     module = LightningModule(config)
 
@@ -197,7 +199,6 @@ if __name__ == '__main__':
         },
         'early_terminate': {
             'type': 'hyperband',
-            'max_iter': 40,
             'min_iter': 20,
             's': 2,
         },
@@ -205,7 +206,8 @@ if __name__ == '__main__':
     }
 
     sweep_id = wandb.sweep(sweep_config, project="VBN-modeling")
-    wandb.agent(sweep_id=sweep_id, function=train_model, count=30)
+    wandb.agent(sweep_id = sweep_id, count = 30,
+                function = train_model(sweep_config['name'], sweep_config['description']))
 
     api = wandb.Api()
     sweep = api.sweep(sweep_id)
