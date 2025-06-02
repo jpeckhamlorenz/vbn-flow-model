@@ -10,3 +10,4 @@ an_data/
 *.pth
 .DS_Store
 *.ckpt
+*.csv

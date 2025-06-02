@@ -96,6 +96,12 @@ class DataModule(pl.LightningDataModule):
         test_dataset = SequenceDataset(test_sequences)
         return torch.utils.data.DataLoader(test_dataset, batch_size=2, shuffle=False, collate_fn=self._collate_fn)
 
+    def predict_dataloader(self):
+        test_folderpath = self.test_folderpath
+        test_sequences = self._load_data(test_folderpath)
+        test_dataset = SequenceDataset(test_sequences)
+        return torch.utils.data.DataLoader(test_dataset, batch_size=2, shuffle=False, collate_fn=self._collate_fn)
+
 
 class LightningModule(pl.LightningModule):
     def __init__(self, config):  # hidden_size, num_layers, lr):
@@ -163,13 +169,17 @@ class LightningModule(pl.LightningModule):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         return optimizer
 
+    def predict_step(self, batch, batch_idx):
+        input, target, length = batch
+        output = self.net(input, length)
+        return output
 
-def train_model(group_name: str = None,
-                description: str = None):
+
+def train_model():
     #     os.environ["WANDB_START_METHOD"] = "thread"'
     wandb.init(project="VBN-modeling",
-               notes = description,
-               group = group_name)
+               notes = 'test1',
+               group = 'test2')
     config = wandb.config
     wandb_logger = WandbLogger()
     data = DataModule(config)
@@ -187,7 +197,7 @@ if __name__ == '__main__':
     sweep_config = {
         'description': 'text for description',
         'method': 'bayes',
-        'name': 'NALO-sweep',
+        'name': 'NALO-sweep-test',
         'metric': {
             'goal': 'minimize',
             'name': 'validation_loss'
@@ -207,7 +217,7 @@ if __name__ == '__main__':
 
     sweep_id = wandb.sweep(sweep_config, project="VBN-modeling")
     wandb.agent(sweep_id = sweep_id, count = 30,
-                function = train_model(sweep_config['name'], sweep_config['description']))
+                function = train_model)
 
     api = wandb.Api()
     sweep = api.sweep(sweep_id)

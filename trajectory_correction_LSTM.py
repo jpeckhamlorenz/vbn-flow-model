@@ -66,7 +66,7 @@ def collate_fn(batch):
     return padded_inputs, padded_targets, lengths
 
 class ResidualLSTM(torch.nn.Module):
-    def __init__(self, input_size=4, hidden_size=64, num_layers=2, output_size=1):
+    def __init__(self, input_size=4, hidden_size=128, num_layers=4, output_size=1):
         super(ResidualLSTM, self).__init__()
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = torch.nn.Linear(hidden_size, output_size)

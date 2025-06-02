@@ -15,7 +15,7 @@ from constants.plotting import font
 
 plt.close('all')
 
-from traj_correction_LSTM_sweep import LightningModule, DataModule
+from traj_prediction_LSTM_sweep import LightningModule, DataModule
 
 # %%
 
@@ -105,7 +105,7 @@ if __name__ == '__main__':
 
     entity = 'jplorenz-university-of-michigan'
     project = 'VBN-modeling'
-    sweep_id = 'xico4n8f'
+    sweep_id = 'ylu2pzde'
 
     api = wandb.Api()
     best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()
@@ -131,7 +131,7 @@ if __name__ == '__main__':
         time = input[0][:,0].cpu().detach().numpy()
         command = input[0][:,1].cpu().detach().numpy()
         bead = input[0][:,2].cpu().detach().numpy()
-        analytical = input[0][:,3].cpu().detach().numpy()
+        # analytical = input[0][:,3].cpu().detach().numpy()
         target = input[1].cpu().detach().numpy()
 
         # Plot the results
@@ -142,7 +142,7 @@ if __name__ == '__main__':
         plt.plot(time, target[:len(time)], label='Analytical Flow Rate', linestyle='--')
         plt.xlabel('Time (s)', fontsize=font['size'])
         plt.ylabel('Flow Rate (mL/min)', fontsize=font['size'])
-        plt.title('WALR Flow Rate Prediction vs Analytical Model', fontsize=font['size'])
+        plt.title('NALO Flow Rate Prediction vs Analytical Model', fontsize=font['size'])
         plt.legend(fontsize=font['size'])
         plt.grid(True)
         plt.show()
