@@ -96,7 +96,7 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=Fals
 model = ResidualLSTM().to(device)
 criterion = torch.nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-epochs = 5
+epochs = 70
 
 train_epoch_losses = []
 val_epoch_losses = []
