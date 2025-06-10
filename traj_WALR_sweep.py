@@ -10,15 +10,15 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_se
 import matplotlib.pyplot as plt
 # from tqdm import tqdm
 from constants.filepath import PROJECT_PATH
-from constants.plotting import font
+# from constants.plotting import font
 
 plt.close('all')
 
 # %%
-class ConfigObject:
-    def __init__(self, dictionary):
-        for key, value in dictionary.items():
-            setattr(self, key, value)
+
+
+
+
 
 
 class ResidualLSTM(torch.nn.Module):
@@ -56,7 +56,7 @@ class DataModule(pl.LightningDataModule):
         self.train_folderpath = train_folderpath
         self.val_folderpath = val_folderpath
         self.test_folderpath = test_folderpath
-
+        self.train_batch_size = config.batch_size
 
     def _load_data(self,data_path, regularization_factor=1e9):
         data_files = sorted([os.path.join(data_path, f) for f in os.listdir(data_path) if f.endswith('.npz')])
@@ -90,29 +90,29 @@ class DataModule(pl.LightningDataModule):
         train_folderpath = self.train_folderpath
         train_sequences = self._load_data(train_folderpath)
         train_dataset = SequenceDataset(train_sequences)
-        return torch.utils.data.DataLoader(train_dataset, batch_size=4, shuffle=True, collate_fn=self._collate_fn)
-
+        return torch.utils.data.DataLoader(train_dataset, shuffle=True, collate_fn=self._collate_fn,
+                                           batch_size = self.train_batch_size)
 
     def val_dataloader(self):
         val_folderpath = self.val_folderpath
         val_sequences = self._load_data(val_folderpath)
         val_dataset = SequenceDataset(val_sequences)
-        return torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=False, collate_fn=self._collate_fn)
-
+        return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn,
+                                           batch_size = 2)
 
     def test_dataloader(self):
         test_folderpath = self.test_folderpath
         test_sequences = self._load_data(test_folderpath)
         test_dataset = SequenceDataset(test_sequences)
-        return torch.utils.data.DataLoader(test_dataset, batch_size=2, shuffle=False, collate_fn=self._collate_fn)
-
+        return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
+                                           batch_size = 2)
 
     def predict_dataloader(self):
         test_folderpath = self.test_folderpath
         test_sequences = self._load_data(test_folderpath)
         test_dataset = SequenceDataset(test_sequences)
-        return torch.utils.data.DataLoader(test_dataset, batch_size=2, shuffle=False, collate_fn=self._collate_fn)
-
+        return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
+                                           batch_size=2)
 
 
 class LightningModule(pl.LightningModule):
@@ -187,97 +187,67 @@ class LightningModule(pl.LightningModule):
         return output
 
 
-def train_model(run_config):
+def train_model():
 
     torch.manual_seed(0)
     pl.seed_everything(0, workers=True)
 
     #     os.environ["WANDB_START_METHOD"] = "thread"'
-    # wandb.run = None  # Reset wandb run to avoid conflicts
-    # wandb.init(project="VBN-modeling",
-    #            notes = 'test1',
-    #            group = 'test2')
-    config = ConfigObject(run_config)
-    # wandb_logger = WandbLogger()
+    wandb.run = None  # Reset wandb run to avoid conflicts
+    wandb.init(project="VBN-modeling",
+               notes = 'test1',
+               group = 'test2')
+    config = wandb.config
+    wandb_logger = WandbLogger()
     data = DataModule(config)
     module = LightningModule(config)
 
-    # wandb_logger.watch(module.net)
+    wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=50, num_sanity_val_steps=0,
-                         default_root_dir="./lightning-test")
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=90, log_every_n_steps=2,
+                         default_root_dir="./lightning-test", logger=wandb_logger)
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
 
-    return trainer, module, data
-
 
 if __name__ == '__main__':
-
-    run_config = {
-        'lr': 0.001,
-        'num_layers': 4,
-        'hidden_size': 128
+    sweep_config = {
+        'description': 'With Analytical, Learn Residual',
+        'method': 'bayes',
+        'name': 'WALR-sweep',
+        'metric': {
+            'goal': 'minimize',
+            'name': 'validation_loss'
+        },
+        'parameters': {
+            'hidden_size': {'values': [32,64,96,128,256]},
+            'num_layers': {'values': [2,3,4,5]},
+            'lr': {'max': 0.01, 'min': 0.0001},
+            'batch_size': {'values': [1,2,3,4,6]},
+        },
+        'early_terminate': {
+            'type': 'hyperband',
+            'min_iter': 3
+        },
+        'run_cap': 40,
     }
 
-    trained_model, module, data = train_model(run_config)
+    sweep_id = wandb.sweep(sweep_config, project="VBN-modeling")
+    wandb.agent(sweep_id = sweep_id, count = 40,
+                function = train_model)
 
-    trained_model.test(module, datamodule=data)
-    prediction = trained_model.predict(module, datamodule=data)
-
-    # %%
-
-    inputs = trained_model.predict_dataloaders.dataset
-    outputs = prediction[0].cpu().detach().numpy()[:, :, 0] / 1e9
-
-    for input, output in zip(inputs, outputs):
-        time = input[0][:, 0].cpu().detach().numpy()
-        command = input[0][:, 1].cpu().detach().numpy() / 1e9
-        bead = input[0][:, 2].cpu().detach().numpy()
-        analytical = input[0][:, 3].cpu().detach().numpy() / 1e9
-        target = input[1].cpu().detach().numpy() / 1e9
-
-        # Plot the results
-
-        # plt.figure(figsize=(10, 6))
-        # plt.plot(time, output[:len(time)], label='Predicted Flow Rate')
-        # plt.plot(time, target[:len(time)], label='Analytical Flow Rate', linestyle='--')
-        # plt.xlabel('Time (s)', fontsize=font['size'])
-        # plt.ylabel('Flow Rate (mL/min)', fontsize=font['size'])
-        # plt.title('WALR Flow Rate Prediction vs Analytical Model', fontsize=font['size'])
-        # plt.legend(fontsize=font['size'])
-        # plt.grid(True)
-        # plt.show()
+    api = wandb.Api()
+    sweep = api.sweep(sweep_id)
+    best_run = sweep.best_run()
+    print("Best Run Name:", best_run.name)
+    print("Best Run ID:", best_run.id)
+    print(best_run.config)
 
 
-        fig_residuals = plt.figure(str(analytical[-1]))
-        ax = fig_residuals.add_subplot(1, 1, 1)
 
-        plt.xlabel('Time [s]', fontdict=font)
-        plt.ylabel('Flow Prediction Error [m3/s]', fontdict=font)
 
-        # plt.xlim(-1,31)
-        # plt.ylim(0,500)
 
-        plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
 
-        plt.xscale('linear')
-        plt.yscale('linear')
 
-        plt.plot(time, output[:len(time)],
-                 color='blue', linewidth=2, linestyle='-',
-                 label='Commanded Flowrate')
-        plt.plot(time, target[:len(time)],
-                 color='red', linewidth=2, linestyle='-',
-                 label='Simulation Prediction')
 
-        # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
-        # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
 
-        # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
-        # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
-
-        # ax.legend()
-
-        leg_residuals = plt.figure("residual legend")
-        leg_residuals.legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])

@@ -96,7 +96,7 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=4, shuffle=Fals
 model = ResidualLSTM().to(device)
 criterion = torch.nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-epochs = 70
+epochs = 20
 
 train_epoch_losses = []
 val_epoch_losses = []
@@ -155,7 +155,7 @@ plt.legend()
 
 
 # Save the model
-# torch.save(model.state_dict(), 'lstm_residual_model_tmp.pth')
+torch.save(model.state_dict(), 'lstm_residual_model_tmp.pth')
 
 print("training complete")
 
