@@ -15,7 +15,7 @@ from constants.plotting import font
 
 plt.close('all')
 
-from traj_WALR_sweep import LightningModule, DataModule
+from traj_NALO_sweep import LightningModule, DataModule
 
 # %%
 
@@ -105,7 +105,7 @@ if __name__ == '__main__':
 
     entity = 'jplorenz-university-of-michigan'
     project = 'VBN-modeling'
-    sweep_id = 'e8wa5l6y'
+    sweep_id = 'tjqx11js'
 
     api = wandb.Api()
     # best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()
@@ -151,7 +151,6 @@ if __name__ == '__main__':
         time = input[0][:,0].cpu().detach().numpy()
         command = input[0][:,1].cpu().detach().numpy()
         bead = input[0][:,2].cpu().detach().numpy()
-        analytical = input[0][:,3].cpu().detach().numpy()
         target = input[1].cpu().detach().numpy()
         output = output_packed[:len(time)]
 
@@ -175,15 +174,13 @@ if __name__ == '__main__':
         plt.plot(time, command,
                  color='black', linewidth=2, linestyle='--',
                  label='Commanded Flowrate')
-        plt.plot(time, analytical + target,
+        plt.plot(time, target,
                  color='red', linewidth=2, linestyle='-',
                  label='Simulation Prediction')
-        plt.plot(time, analytical + output,
+        plt.plot(time, output,
                  color='blue', linewidth=2, linestyle='-',
                  label='Analytical+LSTM Model')
-        plt.plot(time, analytical,
-                 color='green', linewidth=2, linestyle='-',
-                 label='Analytical Model')
+
 
         # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
         # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
@@ -196,73 +193,73 @@ if __name__ == '__main__':
         leg_flows[idx] = plt.figure("flowrate legend")
         leg_flows[idx].legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
 
-        # %% figure:  residuals in time-series
-
-        fig_residuals[idx] = plt.figure('residual prediction' + str(idx))
-        ax = fig_residuals[idx].add_subplot(1, 1, 1)
-
-        plt.xlabel('Time [s]', fontdict=font)
-        plt.ylabel('Flow Prediction Error [m3/s]', fontdict=font)
-
-        # plt.xlim(-1,31)
-        # plt.ylim(0,500)
-
-        plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
-
-        plt.xscale('linear')
-        plt.yscale('linear')
-
-        plt.plot(time, output,
-                 color='blue', linewidth=2, linestyle='-',
-                 label='LSTM Output')
-        plt.plot(time, target,
-                 color='red', linewidth=2, linestyle='-',
-                 label='Simulation Output')
-
-        # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
-        # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
-
-        # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
-        # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
-
-        # ax.legend()
-
-        leg_residuals[idx] = plt.figure("residual legend")
-        leg_residuals[idx].legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
-
-        # %% error histograms
-
-        fig_error[idx] = plt.figure('error histogram' + str(idx))
-        ax = fig_error[idx].add_subplot(1, 1, 1)
-
-        plt.xlabel('Flow Prediction Error [mm3/s]', fontdict=font)
-        plt.ylabel('Frequency', fontdict=font)
-        plt.title('Error Histogram', fontdict=font)
-        plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
-        # Plotting the histograms
-        ax.hist((target) * 1e9, bins=40, alpha=0.5, color='red', label='Analytical Error',
-                density=True)
-        ax.hist((target - output) * 1e9, bins=40, alpha=0.5, color='blue',
-                label='Analytical+LSTM Error', density=True)
-
-        plt.axvline(0, color='black', linestyle='-', linewidth=1, label='Zero Error')
-
-        # ax.legend(loc='upper right', fontsize='small')
-
-        leg_error[idx] = plt.figure("error legend")
-        leg_error[idx].legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
-
-    # %% save figs
-
-    # for idx, flow in enumerate(fig_flows.values()):
+    #     # %% figure:  residuals in time-series
     #
-    #     fig_flows[idx].savefig('/Users/james/Desktop/flows_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    #     fig_residuals[idx].savefig('/Users/james/Desktop/residuals_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    #     fig_error[idx].savefig('/Users/james/Desktop/error_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    #     fig_residuals[idx] = plt.figure('residual prediction' + str(idx))
+    #     ax = fig_residuals[idx].add_subplot(1, 1, 1)
     #
-    #     leg_flows[idx].savefig('/Users/james/Desktop/flows_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    #     leg_residuals[idx].savefig('/Users/james/Desktop/residuals_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    #     leg_error[idx].savefig('/Users/james/Desktop/error_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    #     plt.xlabel('Time [s]', fontdict=font)
+    #     plt.ylabel('Flow Prediction Error [m3/s]', fontdict=font)
+    #
+    #     # plt.xlim(-1,31)
+    #     # plt.ylim(0,500)
+    #
+    #     plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
+    #
+    #     plt.xscale('linear')
+    #     plt.yscale('linear')
+    #
+    #     plt.plot(time, output,
+    #              color='blue', linewidth=2, linestyle='-',
+    #              label='LSTM Output')
+    #     plt.plot(time, target,
+    #              color='red', linewidth=2, linestyle='-',
+    #              label='Simulation Output')
+    #
+    #     # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
+    #     # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
+    #
+    #     # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
+    #     # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
+    #
+    #     # ax.legend()
+    #
+    #     leg_residuals[idx] = plt.figure("residual legend")
+    #     leg_residuals[idx].legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
+    #
+    #     # %% error histograms
+    #
+    #     fig_error[idx] = plt.figure('error histogram' + str(idx))
+    #     ax = fig_error[idx].add_subplot(1, 1, 1)
+    #
+    #     plt.xlabel('Flow Prediction Error [mm3/s]', fontdict=font)
+    #     plt.ylabel('Frequency', fontdict=font)
+    #     plt.title('Error Histogram', fontdict=font)
+    #     plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
+    #     # Plotting the histograms
+    #     ax.hist((target) * 1e9, bins=40, alpha=0.5, color='red', label='Analytical Error',
+    #             density=True)
+    #     ax.hist((target - output) * 1e9, bins=40, alpha=0.5, color='blue',
+    #             label='Analytical+LSTM Error', density=True)
+    #
+    #     plt.axvline(0, color='black', linestyle='-', linewidth=1, label='Zero Error')
+    #
+    #     # ax.legend(loc='upper right', fontsize='small')
+    #
+    #     leg_error[idx] = plt.figure("error legend")
+    #     leg_error[idx].legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
+    #
+    # # %% save figs
+    #
+    # # for idx, flow in enumerate(fig_flows.values()):
+    # #
+    # #     fig_flows[idx].savefig('/Users/james/Desktop/flows_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    # #     fig_residuals[idx].savefig('/Users/james/Desktop/residuals_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    # #     fig_error[idx].savefig('/Users/james/Desktop/error_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    # #
+    # #     leg_flows[idx].savefig('/Users/james/Desktop/flows_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    # #     leg_residuals[idx].savefig('/Users/james/Desktop/residuals_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    # #     leg_error[idx].savefig('/Users/james/Desktop/error_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
 
 
 

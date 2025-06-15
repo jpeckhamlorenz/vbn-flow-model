@@ -16,9 +16,9 @@ plt.close('all')
 
 # %%
 
-class WalrLSTM(torch.nn.Module):
+class WaloLSTM(torch.nn.Module):
     def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
-        super(WalrLSTM, self).__init__()
+        super(WaloLSTM, self).__init__()
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = torch.nn.Linear(hidden_size, output_size)
 
@@ -66,7 +66,7 @@ class DataModule(pl.LightningDataModule):
 
             input_features = torch.stack((time, command, bead, analytical), dim=1)
             # input_features = torch.stack((command, analytical), dim=1)
-            target_residuals = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
+            target_residuals = torch.tensor(regularization_factor * data['Q_sim'], dtype=torch.float32)
 
             sequences.append((input_features, target_residuals))
         return sequences
@@ -113,7 +113,7 @@ class DataModule(pl.LightningDataModule):
 class LightningModule(pl.LightningModule):
     def __init__(self, config):  # hidden_size, num_layers, lr):
         super().__init__()
-        self.net = WalrLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
+        self.net = WaloLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
         self.lr = config.lr
 
     #         self.save_hyperparameters()  # **wandb process fail to finish if this is uncommented**
@@ -195,8 +195,8 @@ def train_model():
     #     os.environ["WANDB_START_METHOD"] = "thread"'
     wandb.run = None  # Reset wandb run to avoid conflicts
     wandb.init(project="VBN-modeling",
-               notes = 'Hyperparameter sweep for WALR',
-               group = 'WALR')
+               notes = 'Hyperparameter sweep for WALO',
+               group = 'WALO')
     config = wandb.config
     wandb_logger = WandbLogger()
     data = DataModule(config)
@@ -212,9 +212,9 @@ def train_model():
 
 if __name__ == '__main__':
     sweep_config = {
-        'description': 'With Analytical, Learn Residual',
+        'description': 'With Analytical, Learn Output',
         'method': 'bayes',
-        'name': 'WALR-sweep',
+        'name': 'WALO-sweep',
         'metric': {
             'goal': 'minimize',
             'name': 'validation_loss'
