@@ -15,7 +15,7 @@ from constants.plotting import font
 
 plt.close('all')
 
-from traj_WALO_sweep import LightningModule, DataModule
+from traj_WALO import LightningModule, DataModule, get_best_run
 
 # %%
 
@@ -45,10 +45,10 @@ from traj_WALO_sweep import LightningModule, DataModule
 
 # %%
 
-class DictToObject:
-    def __init__(self, dictionary):
-        for key, value in dictionary.items():
-            setattr(self, key, value)
+# class DictToObject:
+#     def __init__(self, dictionary):
+#         for key, value in dictionary.items():
+#             setattr(self, key, value)
 
 # run_config = DictToObject(best_run.config)
 #
@@ -64,7 +64,8 @@ class DictToObject:
 # trainer.test(model)
 
 #%%
-def test_model(run,
+def test_model(run_id, run_config,
+                project: str = 'VBN-modeling',
                group_name: str = None,
                description: str = None):
     #     os.environ["WANDB_START_METHOD"] = "thread"'
@@ -74,13 +75,13 @@ def test_model(run,
     # config = wandb.config
     # wandb_logger = WandbLogger()
 
-    run_config = DictToObject(run.config)
+    # run_config = DictToObject(run.config)
     checkpoint_id = os.listdir(
-        os.path.join(PROJECT_PATH, project, run.id, 'checkpoints')
+        os.path.join(PROJECT_PATH, project, run_id, 'checkpoints')
     )[0]  # Assuming only one checkpoint file exists
 
     model = LightningModule.load_from_checkpoint(
-        os.path.join(PROJECT_PATH, project, run.id, 'checkpoints', checkpoint_id),
+        os.path.join(PROJECT_PATH, project, run_id, 'checkpoints', checkpoint_id),
         config=run_config)
 
 
@@ -103,28 +104,31 @@ def test_model(run,
 
 if __name__ == '__main__':
 
-    entity = 'jplorenz-university-of-michigan'
-    project = 'VBN-modeling'
-    sweep_id = ''  # todo: this should have an id
+    # entity = 'jplorenz-university-of-michigan'
+    # project = 'VBN-modeling'
+    # sweep_id = 'mxdpfxr2'  #
 
-    api = wandb.Api()
-    # best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()
-    # best_run = api.run(entity + '/' + project + '/' + 'g0zp7x5x')
-    runs = api.sweep(entity + '/' + project + '/' + sweep_id).runs
+    # api = wandb.Api()
+    # # best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()
+    # # best_run = api.run(entity + '/' + project + '/' + 'g0zp7x5x')
+    # runs = api.sweep(entity + '/' + project + '/' + sweep_id).runs
+    #
+    # run_losses = {}
+    # for run in runs:
+    #     run_losses[run.id] = run.summary['validate/loss']
+    #
+    # run_losses_sorted = sorted(run_losses.items(), key=lambda item: item[1])
+    #
+    # best_run_id = run_losses_sorted[0][0]
+    #
+    # best_run = api.run(entity + '/' + project + '/' + best_run_id)
+    # print("Best Run Name:", best_run.name)
+    # print("Best Run ID:", best_run.id)
+    run_id, run_config = get_best_run()
 
-    run_losses = {}
-    for run in runs:
-        run_losses[run.id] = run.summary['validate/loss']
+    trainer, prediction = test_model(run_id, run_config)
 
-    run_losses_sorted = sorted(run_losses.items(), key=lambda item: item[1])
 
-    best_run_id = run_losses_sorted[0][0]
-    best_run = api.run(entity + '/' + project + '/' + best_run_id)
-    print("Best Run Name:", best_run.name)
-
-    trainer, prediction = test_model(best_run,
-               group_name = sweep_id,
-               description = best_run.name)
     # run_config = DictToObject(best_run.config)
     # checkpoint_id = os.listdir(
     #     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints')
@@ -180,7 +184,7 @@ if __name__ == '__main__':
                  label='Simulation Prediction')
         plt.plot(time, output,
                  color='blue', linewidth=2, linestyle='-',
-                 label='Analytical+LSTM Model')
+                 label='ML Model')
         plt.plot(time, analytical,
                  color='green', linewidth=2, linestyle='-',
                  label='Analytical Model')

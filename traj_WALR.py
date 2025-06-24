@@ -8,9 +8,9 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_se
 from constants.filepath import PROJECT_PATH
 
 
-class NaloLSTM(torch.nn.Module):
-    def __init__(self, input_size=3, hidden_size=128, num_layers=3, output_size=1):
-        super(NaloLSTM, self).__init__()
+class WalrLSTM(torch.nn.Module):
+    def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
+        super(WalrLSTM, self).__init__()
         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
         self.fc = torch.nn.Linear(hidden_size, output_size)
 
@@ -52,14 +52,15 @@ class DataModule(pl.LightningDataModule):
             data = np.load(file)
             time = torch.tensor(data['time'], dtype=torch.float32)
             command = torch.tensor(regularization_factor * data['Q_com'], dtype=torch.float32)
+            analytical = torch.tensor(regularization_factor * data['Q_vbn'], dtype=torch.float32)
             # todo: generate a dataset that has bead width and load from that instead of making my own bead array
             bead = torch.full_like(time, 0.0029, dtype=torch.float32)
 
-            input_features = torch.stack((time, command, bead), dim=1)
+            input_features = torch.stack((time, command, bead, analytical), dim=1)
             # input_features = torch.stack((command, analytical), dim=1)
-            target_outputs = torch.tensor(regularization_factor * data['Q_sim'], dtype=torch.float32)
+            target_residuals = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
 
-            sequences.append((input_features, target_outputs))
+            sequences.append((input_features, target_residuals))
         return sequences
 
     def _collate_fn(self, batch):
@@ -104,7 +105,7 @@ class DataModule(pl.LightningDataModule):
 class LightningModule(pl.LightningModule):
     def __init__(self, config):  # hidden_size, num_layers, lr):
         super().__init__()
-        self.net = NaloLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
+        self.net = WalrLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
         self.lr = config.lr
 
     #         self.save_hyperparameters()  # **wandb process fail to finish if this is uncommented**
@@ -180,7 +181,6 @@ class LightningModule(pl.LightningModule):
     def forward(self, x, lengths):
         return self.net(x, lengths)
 
-
 class DictToObject:
     def __init__(self, dictionary):
         for key, value in dictionary.items():
@@ -189,7 +189,7 @@ class DictToObject:
 
 def get_best_run(entity = 'jplorenz-university-of-michigan',
                  project = 'VBN-modeling',
-                 sweep_id = 'tjqx11js'):
+                 sweep_id = 'e8wa5l6y'):
 
     api = wandb.Api()
     # best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()

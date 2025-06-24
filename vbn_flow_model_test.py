@@ -5,8 +5,8 @@ import numpy as np
 plt.close('all')
 import itertools
 import torch
-from glob import glob
-
+from constants.filepath import PROJECT_PATH
+import os
 
 # if torch.backends.mps.is_available():
 #     mps_device = torch.device("mps")
@@ -21,6 +21,40 @@ plt.close('all')
 from flow_predictor_hybrid import flow_predictor_lstm
 
 #%%
+
+# from traj_WALR import LightningModule, get_best_run
+# run_id, run_config = get_best_run()
+# checkpoint_id = os.listdir(os.path.join(PROJECT_PATH, 'VBN-modeling', run_id, 'checkpoints'))[0]  # Assuming only one ckpt file exists
+# checkpoint = torch.load(
+#     os.path.join(PROJECT_PATH, 'VBN-modeling', run_id, 'checkpoints', checkpoint_id),
+#     map_location=torch.device('cpu')  # Load to CPU first
+# )
+
+# model = LightningModule.load_from_checkpoint(
+#         os.path.join(PROJECT_PATH, 'VBN-modeling', run_id, 'checkpoints', checkpoint_id),
+#         config=run_config)
+# model.eval()
+
+
+
+#%%
+
+
+# import torch
+# from traj_WALR import WalrLSTM as LSTMmodel
+# from traj_WALR import get_best_run
+#
+#
+#
+# model = LSTMmodel(hidden_size = run_config.hidden_size, num_layers = run_config.num_layers).to('mps')
+#
+# state_dict = checkpoint['state_dict']
+# remove_prefix = 'net.'
+# state_dict = {k[len(remove_prefix):] if k.startswith(remove_prefix) else k: v for k, v in state_dict.items()}
+# model.load_state_dict(state_dict)
+#
+# model.eval()
+
 
 #%%
 
@@ -269,15 +303,18 @@ corner_flowmatch_test.pathgen()
 #                          tmax=20)
 time, command, bead = corner_flowmatch_test.pathgen()
 
-prediction, residual, analytical = flow_predictor_lstm(time, command, bead,
-                                                        flowrate_regularization=1e9,
-                                                        model_filename='lstm_residual_model_v7.pth')
+# prediction, residual, analytical = flow_predictor_lstm(time, command, bead,
+#                                                         flowrate_regularization=1e9,
+#                                                         model_filename='lstm_residual_model_v7.pth')
+
+prediction, analytical = flow_predictor_lstm(time, command, bead, 'WALR')
+
 # plot results
 plot_skip = 0.2  # Adjust this to skip more points if needed
 test = plt.figure(figsize=(12, 6))
 plt.plot(time[time > plot_skip], command[time > plot_skip], label='Commanded Flow Rate', color='black', linestyle='--')
 plt.plot(time[time > plot_skip], analytical[time > plot_skip], label='Analytical Flow Rate', color='blue')
-plt.plot(time[time > plot_skip], residual[time > plot_skip], label='Residual Prediction', color='magenta')
+# plt.plot(time[time > plot_skip], residual[time > plot_skip], label='Residual Prediction', color='magenta')
 plt.plot(time[time > plot_skip], prediction[time > plot_skip], label='Total Flow Rate', color='green')
 
 plt.xlabel('Time (s)')
@@ -288,4 +325,4 @@ plt.grid()
 
 # save the figure at 600 dpi
 
-test.savefig('corner_flowmatching_LSTM_test.png', bbox_inches='tight', dpi=600)
+# test.savefig('corner_flowmatching_LSTM_test.png', bbox_inches='tight', dpi=600)

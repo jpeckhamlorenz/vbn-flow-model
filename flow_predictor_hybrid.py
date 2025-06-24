@@ -3,23 +3,22 @@
 import os
 # import numpy as np
 import torch
-import matplotlib.pyplot as plt
-from constants.filepath import PROJECT_PATH
 from flow_predictor import flow_predictor as flow_predictor_analytical
-from pathgen import training_twosteps
+from constants.filepath import PROJECT_PATH
+
 
 
 #%%
-class ResidualLSTM(torch.nn.Module):
-    def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
-        super(ResidualLSTM, self).__init__()
-        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = torch.nn.Linear(hidden_size, output_size)
-
-    def forward(self, x):
-        output, _ = self.lstm(x)
-        output = self.fc(output)
-        return output
+# class ResidualLSTM(torch.nn.Module):
+#     def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
+#         super(ResidualLSTM, self).__init__()
+#         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+#         self.fc = torch.nn.Linear(hidden_size, output_size)
+#
+#     def forward(self, x):
+#         output, _ = self.lstm(x)
+#         output = self.fc(output)
+#         return output
 
 # %%
 
@@ -38,8 +37,8 @@ class ResidualLSTM(torch.nn.Module):
 
 # %%
 
-def flow_predictor_lstm(time_np, command_np, bead_np,
-                   flowrate_regularization=1e9, model_filename ='lstm_residual_model_v7.pth', device_type = 'mps'):
+def flow_predictor_lstm(time_np, command_np, bead_np, model_type,
+                   flowrate_regularization=1e9, model_filename = '', device_type = 'mps'):
 
     _, _, _, analytical_np = flow_predictor_analytical(time_np, command_np, bead_np)
     # _, _, _, Q_vbn = flow_predictor(test.pathgen())
@@ -51,29 +50,71 @@ def flow_predictor_lstm(time_np, command_np, bead_np,
 
     input_features = torch.stack((time_tensor, command_tensor, bead_tensor, analytical_tensor), dim=1)
     # input_features = torch.stack((time_tensor, command_tensor, analytical_tensor), dim=1)
+
     assert device_type in ['cpu', 'cuda', 'mps'], "Invalid device type. Choose 'cpu', 'cuda', or 'mps'."
     device = torch.device(device_type)
-    model = ResidualLSTM().to(device)
 
-    state_dict = torch.load(model_filename)
-    model.load_state_dict(state_dict)
+    if model_type == 'WALR':
+        from traj_WALR import LightningModule, get_best_run
+    elif model_type == 'WALO':
+        from traj_WALO import LightningModule, get_best_run
+    elif model_type == 'NALO':
+        input_features = torch.stack((time_tensor, command_tensor, bead_tensor), dim=1)
+        from traj_NALO import LightningModule, get_best_run
+    else:
+        print(f"Model type {model_type} not recognized. Defaulting to WALR.")
+        from traj_WALR import LightningModule, get_best_run
+
+
+
+    run_id, run_config = get_best_run()
+    checkpoint_id = os.listdir(os.path.join(PROJECT_PATH, 'VBN-modeling', run_id, 'checkpoints'))[0]
+
+    model = LightningModule.load_from_checkpoint(
+        os.path.join(PROJECT_PATH, 'VBN-modeling', run_id, 'checkpoints', checkpoint_id),
+        config=run_config)
+
 
     model.eval()
 
+
+
+    # model = LSTMmodel().to(device)
+
+    # state_dict = torch.load(model_filename)
+    # model.load_state_dict(state_dict)
+
+    # checkpoint = torch.load(model_filename)
+    # model.load_state_dict(checkpoint["state_dict"])
+
+    # model.eval()
+
+    # with torch.no_grad():
+    #     output = model(input_features.to(device), torch.tensor(len(input_features)))
+
     with torch.no_grad():
-        output = model(input_features.to(device))
+        output = model(input_features.unsqueeze(0).to(device), torch.tensor(len(input_features)).unsqueeze(0).to(device))
 
-    residual = (output).cpu().numpy().squeeze() / 1e9
+    if model_type == 'WALO' or model_type == 'NALO':
+        output_flow = (output).cpu().numpy().squeeze() / 1e9
+    else:
+        residual = (output).cpu().numpy().squeeze() / 1e9
+        output_flow = analytical_np + residual
 
-    output_flow = analytical_np + residual
 
-    return output_flow, residual, analytical_np
+
+
+    return output_flow, analytical_np
 
 
 
 # %%
 
 if __name__ == "__main__":
+    from pathgen import training_twosteps
+    from constants.filepath import PROJECT_PATH
+    import matplotlib.pyplot as plt
+
     test = training_twosteps(flowrate_magnitudes=[[0.2, 0.001], [0.48, 0.001]],
                              flowrate_times=[[0.0001, 4], [7, 16]],
                              beadwidth_magnitudes=[[]],
