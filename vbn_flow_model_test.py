@@ -18,7 +18,7 @@ import os
 plt.close('all')
 
 # from flow_predictor import flow_predictor
-from flow_predictor_hybrid import flow_predictor_lstm
+from flow_predictor_lstm import flow_predictor_lstm
 
 #%%
 

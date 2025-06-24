@@ -1,7 +1,7 @@
 data/
 archive/
 dataset/
-model_data/
+archive/model_data/
 slides/
 wandb/
 an_data/
