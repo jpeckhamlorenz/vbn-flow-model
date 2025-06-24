@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from flow_predictor import flow_predictor
+from flow_predictor_analytical import flow_predictor
 from constants.filepath import PROJECT_PATH
 
 

@@ -1,5 +1,6 @@
 function [t,x]  = VBN_flow_model_solver(ts, input_motor, input_beadwidth, IC, constants)
 
+warning('off','all')
 
 A_const = constants(1);  % forcing constant
 B_const = constants(2);  % viscous friction constant

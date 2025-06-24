@@ -1,38 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from flow_predictor import flow_predictor, flow_predictor_plots
+from flow_predictor_analytical import flow_predictor, flow_predictor_plots
 from copy import deepcopy
 import matplotlib
+from constants.plotting import OOMFormatter, font
 
-
-#%%
-
-# %% plotting setup
-
-class OOMFormatter(matplotlib.ticker.ScalarFormatter):
-    def __init__(self, order=0, fformat="%1.1f", offset=True, mathText=True):
-        self.oom = order
-        self.fformat = fformat
-        matplotlib.ticker.ScalarFormatter.__init__(self,useOffset=offset,useMathText=mathText)
-    def _set_order_of_magnitude(self):
-        self.orderOfMagnitude = self.oom
-    def _set_format(self, vmin=None, vmax=None):
-        self.format = self.fformat
-        if self._useMathText:
-            self.format = r'$\mathdefault{%s}$' % self.format
-
-
-font = {'family': 'serif',
-        'color': 'k',
-        'weight': 'normal',
-        'size': 14,
-        }
 
 # marker = itertools.cycle((',', '.', 'o', '*'))
 # color = itertools.cycle(('b','r','g','k'))
 
 
-#%%
 class corner_naive:
     def __init__(self,
                  dt = 0.01,  # time step [s]
@@ -359,7 +336,6 @@ class corner_naive:
         )
 
 
-#%%
 class corner_flowmatch:
     def __init__(self,
                  dt=0.01,  # time step [s]
@@ -558,7 +534,6 @@ class corner_flowmatch:
         )
 
 
-#%%
 class twostep:
     def __init__(self,
                  dt=0.001,  # time step [s]
@@ -902,8 +877,6 @@ class training_twosteps:
 
         # leg_test = plt.figure("test legend")
         # leg_test.legend(ax.get_legend_handles_labels()[0],ax.get_legend_handles_labels()[1])
-
-
 
 
 

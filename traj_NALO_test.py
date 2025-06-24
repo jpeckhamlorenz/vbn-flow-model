@@ -17,53 +17,9 @@ plt.close('all')
 
 from traj_NALO import LightningModule, DataModule, get_best_run
 
-# %%
-
-# entity = 'jplorenz-university-of-michigan'
-# project = 'VBN-modeling'
-# sweep_id = '6ksey94e'
-
 
 #%%
 
-# sweep_list= wandb.Api().project(project).sweeps()
-# sweep_id = sweep_list[1].id
-
-# api = wandb.Api()
-# sweep = api.sweep(entity + '/' + project + '/' + sweep_id)
-#
-# best_run = sweep.best_run()
-
-# run_id = best_run.id
-# run_name = best_run.name
-#
-# print("Best Run Name:", run_name)
-# print("Best Run ID:", run_id)
-# print(best_run.config)
-
-
-
-# %%
-
-# class DictToObject:
-#     def __init__(self, dictionary):
-#         for key, value in dictionary.items():
-#             setattr(self, key, value)
-
-# run_config = DictToObject(best_run.config)
-#
-# checkpoint_id = os.listdir(
-#     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints')
-#     )[0] # Assuming only one checkpoint file exists
-#
-# model = LightningModule.load_from_checkpoint(
-#     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints', checkpoint_id),
-#     config = run_config)
-
-# trainer = pl.Trainer()
-# trainer.test(model)
-
-#%%
 def test_model(run_id, run_config,
                project: str = 'VBN-modeling',
                group_name: str = None,
@@ -104,37 +60,11 @@ def test_model(run_id, run_config,
 
 if __name__ == '__main__':
 
-    # entity = 'jplorenz-university-of-michigan'
-    # project = 'VBN-modeling'
-    # sweep_id = 'tjqx11js'
-    #
-    # api = wandb.Api()
-    # # best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()
-    # # best_run = api.run(entity + '/' + project + '/' + 'g0zp7x5x')
-    # runs = api.sweep(entity + '/' + project + '/' + sweep_id).runs
-    #
-    # run_losses = {}
-    # for run in runs:
-    #     run_losses[run.id] = run.summary['validate/loss']
-    #
-    # run_losses_sorted = sorted(run_losses.items(), key=lambda item: item[1])
-    #
-    # best_run_id = run_losses_sorted[0][0]
-    # best_run = api.run(entity + '/' + project + '/' + best_run_id)
-    # print("Best Run Name:", best_run.name)
+
     run_id, run_config = get_best_run()
 
     trainer, prediction = test_model(run_id, run_config)
-    # run_config = DictToObject(best_run.config)
-    # checkpoint_id = os.listdir(
-    #     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints')
-    # )[0]  # Assuming only one checkpoint file exists
-    #
-    # model = LightningModule.load_from_checkpoint(
-    #     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints', checkpoint_id),
-    #     config=run_config)
 
-    # extract the original data that goes into the prediction
     inputs = trainer.predict_dataloaders.dataset
     outputs = prediction[0].cpu().detach().numpy()[:,:,0]
 

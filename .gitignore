@@ -4,7 +4,7 @@ dataset/
 archive/model_data/
 slides/
 wandb/
-an_data/
+archive/an_data/
 .idea/*
 *.pyc
 *.pth

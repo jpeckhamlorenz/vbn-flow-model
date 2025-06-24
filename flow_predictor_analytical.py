@@ -86,7 +86,7 @@ def flow_predictor(
         [A_const, B_const, C_const, D_const, N_const, M_const, U_const, fld.N_INDEX, mix.D_IN, a, b, c, d])
 
     # %%
-
+    print('Running analytical flow prediction...')
     eng = matlab.engine.start_matlab()
     [t, x] = eng.VBN_flow_model_solver(ts, input_motor, input_beadwidth, IC, constants, nargout=2)
     eng.quit()
@@ -210,37 +210,5 @@ def flow_predictor_plots(
 
 
 
-#%%
-# class ResidualModel(torch.nn.Module):
-#     def __init__(self):
-#         super(ResidualModel, self).__init__()
-#         # self.fc1 = torch.nn.Linear(2, 64)  # Input layer
-#         # self.fc2 = torch.nn.Linear(64, 256)  # Hidden layer
-#         # self.fc3 = torch.nn.Linear(256, 64)  # Output layer
-#         # self.fc4 = torch.nn.Linear(64, 1)  # Output layer
-#
-#         self.fc1 = torch.nn.Linear(2, 64)  # Input layer
-#         self.fc2 = torch.nn.Linear(64, 512)  # Hidden layer
-#         self.fc3 = torch.nn.Linear(512, 1024)  # Hidden layer
-#         self.fc4 = torch.nn.Linear(1024, 512)  # Output layer
-#         self.fc5 = torch.nn.Linear(512, 64)  # Output layer
-#         self.fc6 = torch.nn.Linear(64, 1)  # Output layer
-#
-#     def forward(self, x):
-#         x = torch.relu(self.fc1(x))
-#         x = torch.relu(self.fc2(x))
-#         x = torch.relu(self.fc3(x))
-#         x = torch.relu(self.fc4(x))
-#         x = torch.relu(self.fc5(x))
-#         return self.fc6(x)
-#
-#     def traj_correction(self, traj_input, Q_out_prior):
-#         self.load_state_dict(torch.load('trajectory_correction_DNN_state_v1.pth', weights_only = True))
-#         self.eval()
-#         with torch.no_grad():
-#             output = self(traj_input) * 1e-9
-#         Q_out_correction = (output).cpu().numpy().reshape(-1)
-#         Q_out_total = Q_out_prior + Q_out_correction
-#
-#         return Q_out_total, Q_out_correction
+
 

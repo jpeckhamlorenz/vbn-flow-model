@@ -7,34 +7,6 @@ from flow_predictor_analytical import flow_predictor as flow_predictor_analytica
 from constants.filepath import PROJECT_PATH
 
 
-
-#%%
-# class ResidualLSTM(torch.nn.Module):
-#     def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
-#         super(ResidualLSTM, self).__init__()
-#         self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-#         self.fc = torch.nn.Linear(hidden_size, output_size)
-#
-#     def forward(self, x):
-#         output, _ = self.lstm(x)
-#         output = self.fc(output)
-#         return output
-
-# %%
-
-# def prep_data(time_np, command_np, bead_np, analytical_np, flowrate_regularization=1e9):
-#
-#     time_tensor = torch.tensor(time_np, dtype=torch.float32)
-#     command_tensor = torch.tensor(command_np*flowrate_regularization, dtype=torch.float32)
-#     bead_tensor = torch.tensor(bead_np, dtype=torch.float32)
-#     analytical_tensor = torch.tensor(analytical_np*flowrate_regularization, dtype=torch.float32)
-#
-#     # input_features = torch.stack((time_tensor, command_tensor, bead_tensor, analytical_tensor), dim=1)
-#     input_features = torch.stack((time_tensor, command_tensor, analytical_tensor), dim=1)
-#
-#     return input_features  # Return the input features and their length
-
-
 # %%
 
 def flow_predictor_lstm(time_np, command_np, bead_np, model_type,
@@ -77,21 +49,7 @@ def flow_predictor_lstm(time_np, command_np, bead_np, model_type,
 
     model.eval()
 
-
-
-    # model = LSTMmodel().to(device)
-
-    # state_dict = torch.load(model_filename)
-    # model.load_state_dict(state_dict)
-
-    # checkpoint = torch.load(model_filename)
-    # model.load_state_dict(checkpoint["state_dict"])
-
-    # model.eval()
-
-    # with torch.no_grad():
-    #     output = model(input_features.to(device), torch.tensor(len(input_features)))
-
+    print("Running LSTM flow prediction...")
     with torch.no_grad():
         output = model(input_features.unsqueeze(0).to(device), torch.tensor(len(input_features)).unsqueeze(0).to(device))
 
@@ -111,7 +69,7 @@ def flow_predictor_lstm(time_np, command_np, bead_np, model_type,
 # %%
 
 if __name__ == "__main__":
-    from pathgen import training_twosteps
+    from inputs.pathgen import training_twosteps
     from constants.filepath import PROJECT_PATH
     import matplotlib.pyplot as plt
 

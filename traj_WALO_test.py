@@ -17,65 +17,13 @@ plt.close('all')
 
 from traj_WALO import LightningModule, DataModule, get_best_run
 
-# %%
-
-# entity = 'jplorenz-university-of-michigan'
-# project = 'VBN-modeling'
-# sweep_id = '6ksey94e'
-
-
-#%%
-
-# sweep_list= wandb.Api().project(project).sweeps()
-# sweep_id = sweep_list[1].id
-
-# api = wandb.Api()
-# sweep = api.sweep(entity + '/' + project + '/' + sweep_id)
-#
-# best_run = sweep.best_run()
-
-# run_id = best_run.id
-# run_name = best_run.name
-#
-# print("Best Run Name:", run_name)
-# print("Best Run ID:", run_id)
-# print(best_run.config)
-
-
-
-# %%
-
-# class DictToObject:
-#     def __init__(self, dictionary):
-#         for key, value in dictionary.items():
-#             setattr(self, key, value)
-
-# run_config = DictToObject(best_run.config)
-#
-# checkpoint_id = os.listdir(
-#     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints')
-#     )[0] # Assuming only one checkpoint file exists
-#
-# model = LightningModule.load_from_checkpoint(
-#     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints', checkpoint_id),
-#     config = run_config)
-
-# trainer = pl.Trainer()
-# trainer.test(model)
 
 #%%
 def test_model(run_id, run_config,
                 project: str = 'VBN-modeling',
                group_name: str = None,
                description: str = None):
-    #     os.environ["WANDB_START_METHOD"] = "thread"'
-    # wandb.init(project="VBN-modeling",
-    #            notes = description,
-    #            group = group_name)
-    # config = wandb.config
-    # wandb_logger = WandbLogger()
 
-    # run_config = DictToObject(run.config)
     checkpoint_id = os.listdir(
         os.path.join(PROJECT_PATH, project, run_id, 'checkpoints')
     )[0]  # Assuming only one checkpoint file exists
@@ -86,13 +34,7 @@ def test_model(run_id, run_config,
 
 
     data = DataModule(run_config)
-    # module = LightningModule(config)
 
-    # model = LightningModule.load_from_checkpoint(
-    #     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints', checkpoint_id),
-    #     config=DictToObject(best_run.config))
-
-    # wandb_logger.watch(model.net)
 
     trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=70, log_every_n_steps=1,
                          default_root_dir="./lightning-test")
