@@ -15,7 +15,7 @@ from constants.plotting import font
 
 plt.close('all')
 
-from traj_WALR import LightningModule, DataModule, get_best_run
+from models.traj_WALR import LightningModule, DataModule, get_best_run
 
 # %%
 

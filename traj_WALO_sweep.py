@@ -10,7 +10,7 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_se
 import matplotlib.pyplot as plt
 from constants.filepath import PROJECT_PATH
 
-from traj_WALO import LightningModule, DataModule
+from models.traj_WALO import LightningModule, DataModule
 
 plt.close('all')
 

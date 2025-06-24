@@ -15,7 +15,7 @@ from constants.plotting import font
 
 plt.close('all')
 
-from traj_NALO import LightningModule, DataModule, get_best_run
+from models.traj_NALO import LightningModule, DataModule, get_best_run
 
 
 #%%
@@ -42,11 +42,7 @@ def test_model(run_id, run_config,
 
 
     data = DataModule(run_config)
-    # module = LightningModule(config)
 
-    # model = LightningModule.load_from_checkpoint(
-    #     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints', checkpoint_id),
-    #     config=DictToObject(best_run.config))
 
     # wandb_logger.watch(model.net)
 

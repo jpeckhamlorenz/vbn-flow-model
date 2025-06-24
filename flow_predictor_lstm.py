@@ -27,15 +27,15 @@ def flow_predictor_lstm(time_np, command_np, bead_np, model_type,
     device = torch.device(device_type)
 
     if model_type == 'WALR':
-        from traj_WALR import LightningModule, get_best_run
+        from models.traj_WALR import LightningModule, get_best_run
     elif model_type == 'WALO':
-        from traj_WALO import LightningModule, get_best_run
+        from models.traj_WALO import LightningModule, get_best_run
     elif model_type == 'NALO':
         input_features = torch.stack((time_tensor, command_tensor, bead_tensor), dim=1)
-        from traj_NALO import LightningModule, get_best_run
+        from models.traj_NALO import LightningModule, get_best_run
     else:
         print(f"Model type {model_type} not recognized. Defaulting to WALR.")
-        from traj_WALR import LightningModule, get_best_run
+        from models.traj_WALR import LightningModule, get_best_run
 
 
 

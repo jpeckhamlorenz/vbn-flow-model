@@ -88,7 +88,7 @@ time, command, bead = corner_flowmatch_test.pathgen()
 #                                                         flowrate_regularization=1e9,
 #                                                         model_filename='lstm_residual_model_v7.pth')
 
-prediction, analytical = flow_predictor_lstm(time, command, bead, 'WALO')
+prediction, analytical = flow_predictor_lstm(time, command, bead, 'WALR')
 
 # plot results
 plot_skip = 0.2  # Adjust this to skip more points if needed

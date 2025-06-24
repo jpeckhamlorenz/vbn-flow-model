@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 # from tqdm import tqdm
 from constants.filepath import PROJECT_PATH
 # from constants.plotting import font
-from traj_NALO import DataModule, LightningModule
+from models.traj_NALO import DataModule, LightningModule
 
 plt.close('all')
 

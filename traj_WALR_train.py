@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from constants.filepath import PROJECT_PATH
 from constants.plotting import font
 
-from traj_WALR import LightningModule, DataModule, DictToObject
+from models.traj_WALR import LightningModule, DataModule, DictToObject
 
 plt.close('all')
 
