@@ -85,22 +85,28 @@ corner_flowmatch_test = corner_flowmatch(
 time, command, bead = corner_flowmatch_test.pathgen()
 
 
-prediction, analytical = flow_predictor_lstm(time, command, bead, 'WALR')
+prediction, analytical = flow_predictor_lstm(time, command, bead, 'NALO')
 
 # plot results
 plot_skip = 0.2  # Adjust this to skip more points if needed
 test = plt.figure(figsize=(12, 6))
-plt.plot(time[time > plot_skip], command[time > plot_skip], label='Commanded Flow Rate', color='black', linestyle='--')
-plt.plot(time[time > plot_skip], analytical[time > plot_skip], label='Analytical Flow Rate', color='blue')
+plt.plot(time[time > plot_skip], command[time > plot_skip] * 1e9,
+         linewidth = 2, label='Commanded Flow Rate', color='black', linestyle='--')
+# plt.plot(time[time > plot_skip], analytical[time > plot_skip] * 1e9,
+#          linewidth = 2, label='Analytical Flow Rate', color='green')
 # plt.plot(time[time > plot_skip], residual[time > plot_skip], label='Residual Prediction', color='magenta')
-plt.plot(time[time > plot_skip], prediction[time > plot_skip], label='Total Flow Rate', color='green')
+plt.plot(time[time > plot_skip], prediction[time > plot_skip] * 1e9,
+         linewidth = 2, label='Total Flow Rate', color='blue')
+# plt.plot(time[time > plot_skip], bead[time > plot_skip] * 1e3,
+#          linewidth = 2, label='Bead Width', color='black')
 
 plt.xlabel('Time (s)')
-plt.ylabel('Flow Rate (m3/s)')
+# plt.ylabel('Flow Rate (m3/s)')
+plt.ylabel('Bead Width (mm)')
 plt.title('Flow Rate Prediction')
-plt.legend()
+# plt.legend()
 plt.grid()
 
 # save the figure at 600 dpi
 
-# test.savefig('corner_flowmatching_LSTM_test.png', bbox_inches='tight', dpi=600)
+# test.savefig('/Users/james/Desktop/corner_flowmatching_NALO_test.png', bbox_inches='tight', dpi=600)

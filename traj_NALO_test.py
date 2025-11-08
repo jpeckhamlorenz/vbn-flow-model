@@ -175,17 +175,17 @@ if __name__ == '__main__':
     #     leg_error[idx] = plt.figure("error legend")
     #     leg_error[idx].legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
     #
-    # # %% save figs
-    #
-    # # for idx, flow in enumerate(fig_flows.values()):
-    # #
-    # #     fig_flows[idx].savefig('/Users/james/Desktop/flows_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    # #     fig_residuals[idx].savefig('/Users/james/Desktop/residuals_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    # #     fig_error[idx].savefig('/Users/james/Desktop/error_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    # #
-    # #     leg_flows[idx].savefig('/Users/james/Desktop/flows_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    # #     leg_residuals[idx].savefig('/Users/james/Desktop/residuals_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    # #     leg_error[idx].savefig('/Users/james/Desktop/error_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+    # %% save figs
+
+    # for idx, flow in enumerate(fig_flows.values()):
+
+        # fig_flows[idx].savefig('/Users/james/Desktop/NALO_flows_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+        # fig_residuals[idx].savefig('/Users/james/Desktop/residuals_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+        # fig_error[idx].savefig('/Users/james/Desktop/error_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+
+        # leg_flows[idx].savefig('/Users/james/Desktop/NALO_flows_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+        # leg_residuals[idx].savefig('/Users/james/Desktop/residuals_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+        # leg_error[idx].savefig('/Users/james/Desktop/error_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
 
 
 

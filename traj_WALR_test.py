@@ -138,9 +138,9 @@ if __name__ == '__main__':
         plt.plot(time, analytical + target,
                  color='red', linewidth=2, linestyle='-',
                  label='Simulation Prediction')
-        plt.plot(time, analytical + output,
-                 color='blue', linewidth=2, linestyle='-',
-                 label='Analytical+LSTM Model')
+        # plt.plot(time, analytical + output,
+        #          color='blue', linewidth=2, linestyle='-',
+        #          label='Analytical+LSTM Model')
         plt.plot(time, analytical,
                  color='green', linewidth=2, linestyle='-',
                  label='Analytical Model')
@@ -215,12 +215,12 @@ if __name__ == '__main__':
     # %% save figs
 
     # for idx, flow in enumerate(fig_flows.values()):
-    #
-    #     fig_flows[idx].savefig('/Users/james/Desktop/flows_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+
+        # fig_flows[idx].savefig('/Users/james/Desktop/WALR_flows_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
     #     fig_residuals[idx].savefig('/Users/james/Desktop/residuals_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
     #     fig_error[idx].savefig('/Users/james/Desktop/error_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
-    #
-    #     leg_flows[idx].savefig('/Users/james/Desktop/flows_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
+
+        # leg_flows[idx].savefig('/Users/james/Desktop/WALR_flows_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
     #     leg_residuals[idx].savefig('/Users/james/Desktop/residuals_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
     #     leg_error[idx].savefig('/Users/james/Desktop/error_leg_' + str(idx) + '.png',bbox_inches='tight',dpi=600)
 
