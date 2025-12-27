@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from flow_predictor_analytical import flow_predictor
 from constants.filepath import PROJECT_PATH
@@ -54,19 +55,40 @@ def create_dataset_from_sim(sim_filepath, save_filepath):
     plt.savefig(os.path.join(vis_filepath, vis_filename))
     # plt.savefig(os.path.join(os.path.dirname(save_filepath), 'test2.png'))
 
+def create_dataset_from_exp(exp_filepath, save_filepath):
+    """
+    Create a dataset from the experimental samples in the specified directory.
+    """
+    # Load the experimental data
+    saved_data = pd.read_csv(exp_filepath)
+    
+
 
 #%%
 
-# Example usage to create datasets from all simulation files in a directory
-sim_folderpath = os.path.join(PROJECT_PATH, 'dataset/sim_samples')
-filepath_list = os.listdir(sim_folderpath)
+# # Example usage to create datasets from all simulation files in a directory
+# sim_folderpath = os.path.join(PROJECT_PATH, 'dataset/sim_samples')
+# filepath_list = os.listdir(sim_folderpath)
+#
+# for filename in filepath_list:
+#     if filename.endswith('.npz'):
+#         sim_filepath = os.path.join(sim_folderpath, filename)
+#         save_filepath = os.path.join(PROJECT_PATH, 'dataset/all_samples', filename)
+#
+#         print(f'Processing {filename}...')
+#         create_dataset_from_sim(sim_filepath, save_filepath)
+#         print(f'Saved dataset to {save_filepath}')
+#         print('-'*50)  # Just for better readability in the console output
 
-for filename in filepath_list:
-    if filename.endswith('.npz'):
-        sim_filepath = os.path.join(sim_folderpath, filename)
-        save_filepath = os.path.join(PROJECT_PATH, 'dataset/all_samples', filename)
+exp_folderpath = os.path.join(PROJECT_PATH, 'dataset/exp_samples')
+filepath_list = os.listdir(exp_folderpath)
 
-        print(f'Processing {filename}...')
-        create_dataset_from_sim(sim_filepath, save_filepath)
-        print(f'Saved dataset to {save_filepath}')
-        print('-'*50)  # Just for better readability in the console output
+filename = filepath_list[2]
+if filename.endswith('.csv'):
+    exp_filepath = os.path.join(exp_folderpath, filename)
+    save_filepath = os.path.join(PROJECT_PATH, 'dataset/all_samples', filename.rsplit('.',1)[0] + '.npz')
+
+    print(f'Processing {filename}...')
+    create_dataset_from_exp(exp_filepath, save_filepath)
+    print(f'Saved dataset to {save_filepath}')
+    print('-'*50)  # Just for better readability in the console output
