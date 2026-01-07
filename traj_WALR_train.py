@@ -33,7 +33,7 @@ def train_model(run_config):
 
     # wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=50, num_sanity_val_steps=0,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=15, num_sanity_val_steps=0,
                          default_root_dir="./lightning-test")
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
@@ -47,7 +47,7 @@ if __name__ == '__main__':
         'lr': 0.001,
         'num_layers': 4,
         'hidden_size': 128,
-        'batch_size': 2,
+        'batch_size': 4,
     }
 
     trained_model, module, data = train_model(run_config)

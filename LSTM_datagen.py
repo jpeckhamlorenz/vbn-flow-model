@@ -87,12 +87,13 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
     Q_com_upsample = np.interp(t_exp, t_com, Q_com)
     Q_vbn_upsample = np.interp(t_exp, t_com, Q_vbn)
 
+    W_exp = np.interp(t_exp, t_com, W_com_pred)
     Q_res = Q_out_exp - Q_vbn_upsample  # Calculate residuals for the simulated flow rate
 
     save_file = save_path / (exp_file.name.rsplit('_', maxsplit=2)[0] + '.npz')
     save_file.parent.mkdir(exist_ok=True)
 
-    lower_cutoff = t_com[0] + 0.5  # seconds
+    lower_cutoff = t_com[0] + 2.5  # seconds
     upper_cutoff = t_com[-1] - 1.5  # seconds
 
     np.savez(save_file,
@@ -100,7 +101,8 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
              Q_com=Q_com_upsample[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
              Q_exp=Q_out_exp[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
              Q_vbn=Q_vbn_upsample[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
-             Q_res=Q_res[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)]
+             Q_res=Q_res[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
+             W_com = W_exp[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)]
              )
 
     # interpolate Q_out_exp to the commanded time points
@@ -109,24 +111,43 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
 
     plt.close('all')
 
-    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], Q_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], label='Commanded Flow Rate', alpha=0.5)
-    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], Q_out_exp_downsample[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], label='Simulated Flow Rate', alpha=0.5)
-    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], Q_vbn[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], label='VBN Flow Rate', alpha=0.5)
-    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], Q_res_downsample[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)], label='Residual (Simulated - VBN)', linestyle='--', alpha=0.5)
+    plt.figure(figsize=(10, 6))
+    plt.subplot(2, 1, 1)
+    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             1e9*Q_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             label='Commanded Flow Rate', alpha=0.5)
+    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             1e9*Q_out_exp_downsample[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             label='Simulated Flow Rate', alpha=0.5)
+    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             1e9*Q_vbn[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             label='VBN Flow Rate', alpha=0.5)
+    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             1e9*Q_res_downsample[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             label='Residual (Simulated - VBN)', linestyle='--', alpha=0.5)
     plt.xlabel('Time [s]')
-    plt.ylabel('Flow Rate [m3/s]')
+    plt.ylabel('Flow Rate [mm3/s]')
     plt.title('Flow Rate Comparison')
+    plt.ylim(-5,15)
     plt.legend()
     plt.grid()
 
-    '''vis_filepath = os.path.join(os.path.dirname(save_filepath), 'dataset_visualization')
-    vis_filename = os.path.basename(sim_filepath).rsplit('.', 1)[0] + '.png'
+    plt.subplot(2, 1, 2)
+    plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             1000*W_com_pred[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
+             label='Bead Width', color='orange', alpha=0.7)
+    plt.xlabel('Time [s]')
+    plt.ylabel('Bead Width [mm]')
+    plt.title(exp_file.name)
+    plt.ylim(0, 3)
+    plt.legend()
+    plt.grid()
 
-    if not os.path.exists(vis_filepath):
-        os.makedirs(vis_filepath)
+    plt.subplots_adjust(hspace=0.4)
 
-    plt.savefig(os.path.join(vis_filepath, vis_filename))
-    # plt.savefig(os.path.join(os.path.dirname(save_filepath), 'test2.png'))'''
+
+
+
 
     vis_file = save_file.parent / ('dataset_visualization/' + exp_file.name.rsplit('_', maxsplit=2)[0] + '.png')
     vis_file.parent.mkdir(exist_ok=True)
@@ -134,12 +155,14 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
     plt.savefig(vis_file)
 
 
-    plt.figure()
-    plt.plot(t_exp, Q_out_exp, label='Flowrates')
-    plt.plot(t_com, Q_com)
 
-    plt.title(exp_file.name)
-    plt.show()
+def create_averaged_dataset(data, window_size):
+    """
+    Generates dataset of patterns that have been averaged across sample cycles of of the same pattern.
+    """
+    filelist = sorted(Path(data).glob('*.npz'))
+
+
 
 
 #%%

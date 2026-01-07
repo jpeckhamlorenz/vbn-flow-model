@@ -2,6 +2,8 @@ VBN-modeling/
 data/
 archive/
 dataset/
+dataset_archive/
+dataset_tmp/
 archive/model_data/
 slides/
 wandb/

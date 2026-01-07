@@ -35,7 +35,7 @@ def train_model():
 
     wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=90, log_every_n_steps=2,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=15, log_every_n_steps=2,
                          default_root_dir="./lightning-test", logger=wandb_logger)
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
@@ -45,7 +45,7 @@ if __name__ == '__main__':
     sweep_config = {
         'description': 'With Analytical, Learn Residual',
         'method': 'bayes',
-        'name': 'WALR-sweep',
+        'name': 'WALR-exp-test',
         'metric': {
             'goal': 'minimize',
             'name': 'validation_loss'
@@ -60,11 +60,11 @@ if __name__ == '__main__':
             'type': 'hyperband',
             'min_iter': 3
         },
-        'run_cap': 40,
+        'run_cap': 10,
     }
 
     sweep_id = wandb.sweep(sweep_config, project="VBN-modeling")
-    wandb.agent(sweep_id = sweep_id, count = 40,
+    wandb.agent(sweep_id = sweep_id, count = 10,
                 function = train_model)
 
     api = wandb.Api()

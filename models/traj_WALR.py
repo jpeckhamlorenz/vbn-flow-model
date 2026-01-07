@@ -53,8 +53,13 @@ class DataModule(pl.LightningDataModule):
             time = torch.tensor(data['time'], dtype=torch.float32)
             command = torch.tensor(regularization_factor * data['Q_com'], dtype=torch.float32)
             analytical = torch.tensor(regularization_factor * data['Q_vbn'], dtype=torch.float32)
-            # todo: generate a dataset that has bead width and load from that instead of making my own bead array
-            bead = torch.full_like(time, 0.0029, dtype=torch.float32)
+
+            try:
+                bead = torch.tensor(1000*data['W_com'], dtype=torch.float32)
+                # input('press enter to continue james lorenz')
+
+            except KeyError:
+                bead = torch.full_like(time, 1000*0.0029, dtype=torch.float32)
 
             input_features = torch.stack((time, command, bead, analytical), dim=1)
             # input_features = torch.stack((command, analytical), dim=1)
