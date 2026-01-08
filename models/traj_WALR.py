@@ -50,7 +50,8 @@ class DataModule(pl.LightningDataModule):
         sequences = []
         for file in data_files:
             data = np.load(file)
-            time = torch.tensor(data['time'], dtype=torch.float32)
+            # time = torch.tensor(data['time'], dtype=torch.float32)
+            time = torch.tensor(data['time'] - data['time'][0] + 0.5, dtype=torch.float32)
             command = torch.tensor(regularization_factor * data['Q_com'], dtype=torch.float32)
             analytical = torch.tensor(regularization_factor * data['Q_vbn'], dtype=torch.float32)
 

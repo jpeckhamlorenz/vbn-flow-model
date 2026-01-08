@@ -33,7 +33,7 @@ def train_model(run_config):
 
     # wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=15, num_sanity_val_steps=0,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=60, num_sanity_val_steps=0,
                          default_root_dir="./lightning-test")
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
@@ -45,9 +45,9 @@ if __name__ == '__main__':
 
     run_config = {
         'lr': 0.001,
-        'num_layers': 4,
-        'hidden_size': 128,
-        'batch_size': 4,
+        'num_layers': 7,
+        'hidden_size': 1024,
+        'batch_size': 3,
     }
 
     trained_model, module, data = train_model(run_config)
@@ -111,3 +111,16 @@ if __name__ == '__main__':
 
         leg_residuals = plt.figure("residual legend")
         leg_residuals.legend(ax.get_legend_handles_labels()[0], ax.get_legend_handles_labels()[1])
+
+
+        # plot bead width
+        fig_bead = plt.figure(str(analytical[-1]) + ' bead')
+        ax_bead = fig_bead.add_subplot(1, 1, 1)
+        plt.xlabel('Time [s]', fontdict=font)
+        plt.ylabel('Bead Width [mm]', fontdict=font)
+        plt.plot(time, bead,
+                 color='black', linewidth=2, linestyle='-',
+                 label='Bead Width')
+        leg_bead = plt.figure("bead legend")
+        leg_bead.legend(ax_bead.get_legend_handles_labels()[0], ax_bead.get_legend_handles_labels()[1])
+
