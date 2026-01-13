@@ -81,7 +81,8 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
     Q_com = pattern_data['q'].to_numpy() / 1e9  # Convert from uL/s to m3/s
 
     # Use flow_predictor to get VBN flow rates
-    _, _, _, Q_vbn = flow_predictor(t_com-t_com[0], Q_com, W_com_pred)
+    # _, _, _, Q_vbn = flow_predictor(t_com-t_com[0], Q_com, W_com_pred)
+    _, _, _, Q_vbn = flow_predictor(t_com - t_com[0], Q_com, W_com_pred/10)  # use 1/10th the bead width for better matching
 
     # interpolate Q_vbn to the experimental time points
     Q_com_upsample = np.interp(t_exp, t_com, Q_com)
@@ -95,9 +96,10 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
 
     lower_cutoff = t_com[0] + 2.5  # seconds
     upper_cutoff = t_com[-1] - 1.5  # seconds
+    t_norm = exp_data['time'] - exp_data['time'][0] + 0.1  # Normalize time to start at 0.1 s
 
     np.savez(save_file,
-             time=t_exp[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],  # Only save time steps greater than 0.2s to match VBN model behavior
+             time=t_norm[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],  # Only save time steps greater than 0.2s to match VBN model behavior
              Q_com=Q_com_upsample[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
              Q_exp=Q_out_exp[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
              Q_vbn=Q_vbn_upsample[(t_exp >= lower_cutoff) & (t_exp <= upper_cutoff)],
@@ -118,7 +120,7 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
              label='Commanded Flow Rate', alpha=0.5)
     plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
              1e9*Q_out_exp_downsample[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
-             label='Simulated Flow Rate', alpha=0.5)
+             label='Experimental Flow Rate', alpha=0.5)
     plt.plot(t_com[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
              1e9*Q_vbn[(t_com >= lower_cutoff) & (t_com <= upper_cutoff)],
              label='VBN Flow Rate', alpha=0.5)
@@ -151,7 +153,6 @@ def create_dataset_from_exp(exp_file, pattern_file, save_path = Path('./dataset/
 
     plt.savefig(vis_file)
     print(f'Saved dataset to {save_file}')
-
 
 
 def create_averaged_dataset(data_folderpath, pattern_id):
@@ -192,6 +193,8 @@ def create_averaged_dataset(data_folderpath, pattern_id):
     save_filepath = Path('./dataset/averaged_samples') / (pattern_id + '_averaged.npz')
     save_filepath.parent.mkdir(exist_ok=True)
 
+    avg_time = avg_time - avg_time[0] + np.diff(avg_time).mean()
+
     np.savez(save_filepath,
              time=avg_time,
              Q_com=avg_Q_com,
@@ -202,6 +205,7 @@ def create_averaged_dataset(data_folderpath, pattern_id):
              )
 
     plt.close('all')
+
 
     plt.figure(figsize=(10, 6))
     plt.subplot(2, 1, 1)
@@ -252,7 +256,7 @@ def create_smoothed_dataset(avg_file):
     Q_res_smooth = Q_exp_smooth - Q_vbn
 
     # change filename to smoothed
-    save_filepath = Path('./dataset/smoothed_samples') / avg_file.name.rsplit('.', maxsplit=2)[0] + '_smoothed.npz'
+    save_filepath = Path('./dataset/smoothed_samples') / (avg_file.name.rsplit('.', maxsplit=2)[0] + '_smoothed.npz')
     save_filepath.parent.mkdir(exist_ok=True)
 
     np.savez(save_filepath,
@@ -293,6 +297,109 @@ def create_smoothed_dataset(avg_file):
     plt.savefig(vis_filepath / vis_filename)
 
     print(f'Saved smoothed dataset to {save_filepath}')
+
+
+def create_recursive_dataset(data_file):
+
+    print(f'Processing file: {data_file}')
+
+    data = np.load(data_file)
+
+    time = data['time']
+    Q_com = data['Q_com']
+    Q_vbn = data['Q_vbn']
+    Q_res = data['Q_res']
+
+    try:
+        Q_tru = data['Q_exp']
+    except KeyError:
+        Q_tru = data['Q_sim']
+
+    try:
+        W_com = data['W_com']
+    except KeyError:
+        W_com = np.ones(np.shape(time)) * 0.0029
+
+    # assert that the time arrays are all roughly uniformly 1 ms spacings
+    dt_array = np.diff(time)
+    assert np.all(np.abs(dt_array - dt_array[0]) < 1e-6), "Time array is not uniformly spaced!"
+    dt = dt_array.mean().round(3)
+
+    # downsample to 1 hundredth of a second if needed
+
+    if dt < 0.01:
+        downsample_factor = int(0.01 / dt)
+        time = time[::downsample_factor]
+        Q_com = Q_com[::downsample_factor]
+        Q_vbn = Q_vbn[::downsample_factor]
+        Q_res = Q_res[::downsample_factor]
+        Q_tru = Q_tru[::downsample_factor]
+        W_com = W_com[::downsample_factor]
+        dt = 0.01
+
+    # grab as many "sliding windows" of three-second intervals as you can, given the data file
+    trajectory_size = 4.5
+    window_length = int(trajectory_size / dt)
+    num_windows = len(time) - window_length + 1
+
+    assert num_windows > 0, "Data file is too short for the specified trajectory size!"
+
+
+    # do sliding windows every 0.1 seconds
+    step_size = int(0.1 / dt)
+
+    for start_idx in range(0, num_windows, step_size):
+        # for start_idx in range(num_windows):
+
+        end_idx = start_idx + window_length
+
+        time_window = time[start_idx:end_idx]
+        time_window = time_window - time_window[0] + dt  # normalize time to start at dt
+        Q_com_window = Q_com[start_idx:end_idx]
+        Q_vbn_window = Q_vbn[start_idx:end_idx]
+        Q_res_window = Q_res[start_idx:end_idx]
+        Q_tru_window = Q_tru[start_idx:end_idx]
+        W_com_window = W_com[start_idx:end_idx]
+
+        save_filepath = Path('./dataset/recursive_samples') / (file.stem + f'_window_{start_idx}.npz')
+        save_filepath.parent.mkdir(exist_ok=True)
+
+        np.savez(save_filepath,
+                 time=time_window,
+                 Q_com=Q_com_window,
+                 Q_vbn=Q_vbn_window,
+                 Q_res=Q_res_window,
+                 Q_tru=Q_tru_window,
+                 W_com=W_com_window
+                 )
+
+        plt.close('all')
+        plt.figure(figsize=(10, 6))
+        plt.subplot(2, 1, 1)
+        plt.plot(time_window, 1e9 * Q_com_window, label='Commanded Flow Rate', alpha=0.5)
+        plt.plot(time_window, 1e9 * Q_tru_window, label='True Flow Rate', alpha=0.5)
+        plt.plot(time_window, 1e9 * Q_vbn_window, label='VBN Flow Rate', alpha=0.5)
+        plt.plot(time_window, 1e9 * Q_res_window, label='Residual (True - VBN)', linestyle='--', alpha=0.5)
+        plt.xlabel('Time [s]')
+        plt.ylabel('Flow Rate [mm3/s]')
+        plt.title(f'Flow Rate Comparison - {file.stem} Window {start_idx}')
+        plt.legend()
+        plt.grid()
+        plt.subplot(2, 1, 2)
+        plt.plot(time_window, 1000 * W_com_window, label='Bead Width', color='orange', alpha=0.7)
+        plt.xlabel('Time [s]')
+        plt.ylabel('Bead Width [mm]')
+        plt.title(f'Bead Width - {file.stem} Window {start_idx}')
+        plt.legend()
+        plt.grid()
+        plt.subplots_adjust(hspace=0.4)
+
+        vis_filepath = save_filepath.parent / 'dataset_visualization'
+        vis_filepath.mkdir(exist_ok=True)
+        vis_filename = file.stem + f'_window_{start_idx}.png'
+        plt.savefig(vis_filepath / vis_filename)
+
+        print(f'Saved recursive dataset to {save_filepath}')
 
 
 
@@ -358,6 +465,15 @@ if __name__ == '__main__':
     #
     # for avg_file in averaged_folderpath:
     #     create_smoothed_dataset(avg_file)
+
+    # %% create recursive dataset from smoothed data
+
+    allfiles_folderpath = sorted(Path('./dataset/LSTM_all_samples').glob('*.npz'))
+
+    for file in allfiles_folderpath:
+
+        create_recursive_dataset(file)
+
 
     # %% all finished
 

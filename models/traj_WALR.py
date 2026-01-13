@@ -36,9 +36,9 @@ class SequenceDataset(torch.utils.data.Dataset):
 
 class DataModule(pl.LightningDataModule):
     def __init__(self, config,
-                   train_folderpath = os.path.join(PROJECT_PATH, 'dataset/LSTM_training'),
-                   val_folderpath = os.path.join(PROJECT_PATH, 'dataset/LSTM_validation'),
-                   test_folderpath = os.path.join(PROJECT_PATH, 'dataset/LSTM_testing')):
+                   train_folderpath = os.path.join(PROJECT_PATH, 'dataset_exp/LSTM_training'),
+                   val_folderpath = os.path.join(PROJECT_PATH, 'dataset_exp/LSTM_validation'),
+                   test_folderpath = os.path.join(PROJECT_PATH, 'dataset_exp/LSTM_testing')):
         super().__init__()
         self.train_folderpath = train_folderpath
         self.val_folderpath = val_folderpath
@@ -50,8 +50,8 @@ class DataModule(pl.LightningDataModule):
         sequences = []
         for file in data_files:
             data = np.load(file)
-            # time = torch.tensor(data['time'], dtype=torch.float32)
-            time = torch.tensor(data['time'] - data['time'][0] + 0.5, dtype=torch.float32)
+            time = torch.tensor(data['time'], dtype=torch.float32)
+            # time = torch.tensor(data['time'] - data['time'][0] + 0.5, dtype=torch.float32)
             command = torch.tensor(regularization_factor * data['Q_com'], dtype=torch.float32)
             analytical = torch.tensor(regularization_factor * data['Q_vbn'], dtype=torch.float32)
 
@@ -91,21 +91,21 @@ class DataModule(pl.LightningDataModule):
         val_sequences = self._load_data(val_folderpath)
         val_dataset = SequenceDataset(val_sequences)
         return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size = 2)
+                                           batch_size = 1)
 
     def test_dataloader(self):
         test_folderpath = self.test_folderpath
         test_sequences = self._load_data(test_folderpath)
         test_dataset = SequenceDataset(test_sequences)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size = 2)
+                                           batch_size = 1)
 
     def predict_dataloader(self):
         test_folderpath = self.test_folderpath
         test_sequences = self._load_data(test_folderpath)
         test_dataset = SequenceDataset(test_sequences)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size=2)
+                                           batch_size=1)
 
 
 class LightningModule(pl.LightningModule):
@@ -130,6 +130,13 @@ class LightningModule(pl.LightningModule):
         norm_factor = torch.mean(torch.abs(target))
         return mse / norm_factor
 
+    def masked_mse(self, pred, target, lengths):
+        # pred, target: [B, T]
+        B, T = target.shape
+        mask = (torch.arange(T, device=lengths.device)[None, :] < lengths[:, None])
+        diff2 = (pred - target) ** 2
+        return (diff2 * mask).sum() / mask.sum().clamp_min(1)
+
     def _percent_within(self, pred, target, tolerance=0.10):
         error = torch.abs(pred - target) / torch.clamp(torch.abs(target), min=1e-9)
         return torch.mean((error <= tolerance).float())
@@ -138,14 +145,18 @@ class LightningModule(pl.LightningModule):
         # training_step defines the train loop.
         input, target, length = batch
         output = self.net(input, length)
-        loss = F.mse_loss(output[:,:,0], target)
+        # loss = F.mse_loss(output[:,:,0], target)
+        pred = output[:, :, 0]
+        loss = self.masked_mse(pred, target, length)
         self.log('train/loss', loss, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         input, target, length = batch
         output = self.net(input, length)
-        loss = F.mse_loss(output[:,:,0], target)
+        # loss = F.mse_loss(output[:,:,0], target)
+        pred = output[:, :, 0]
+        loss = self.masked_mse(pred, target, length)
         r2_score = self._r2_score(output[:, :, 0], target)
         rmse_accuracy = self._rmse_accuracy(output[:, :, 0], target)
         percent_within = self._percent_within(output[:, :, 0], target)
@@ -156,12 +167,17 @@ class LightningModule(pl.LightningModule):
             "validate/percent-within": percent_within,
             })
         # self.log('validation-loss', loss)
+        # print(f'Validation Loss: {loss.item()}')
+        # import ipdb; ipdb.set_trace()
+
         return loss
 
     def test_step(self, batch, batch_idx):
         input, target, length = batch
         output = self.net(input, length)
-        loss = F.mse_loss(output[:,:,0], target)
+        # loss = F.mse_loss(output[:,:,0], target)
+        pred = output[:, :, 0]
+        loss = self.masked_mse(pred, target, length)
         r2_score = self._r2_score(output[:, :, 0], target)
         rmse_accuracy = self._rmse_accuracy(output[:, :, 0], target)
         percent_within = self._percent_within(output[:, :, 0], target)

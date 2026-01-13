@@ -91,7 +91,7 @@ def test_model(run_id, run_config,
 
 if __name__ == '__main__':
 
-    run_id, run_config = get_best_run()
+    run_id, run_config = get_best_run(sweep_id='sgbgw2hc')
 
     trainer, prediction = test_model(run_id, run_config)
 

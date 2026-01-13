@@ -33,21 +33,21 @@ def train_model(run_config):
 
     # wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=60, num_sanity_val_steps=0,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=20, num_sanity_val_steps=0,
                          default_root_dir="./lightning-test")
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
 
     return trainer, module, data
 
-
+#%%
 if __name__ == '__main__':
 
     run_config = {
         'lr': 0.001,
-        'num_layers': 7,
-        'hidden_size': 1024,
-        'batch_size': 3,
+        'num_layers': 5,
+        'hidden_size': 256,
+        'batch_size': 1,
     }
 
     trained_model, module, data = train_model(run_config)
@@ -124,3 +124,22 @@ if __name__ == '__main__':
         leg_bead = plt.figure("bead legend")
         leg_bead.legend(ax_bead.get_legend_handles_labels()[0], ax_bead.get_legend_handles_labels()[1])
 
+
+
+# %% test to be removed
+
+
+    # x0, y0, len0 = next(iter(data.train_dataloader()))
+    # x0, y0, len0 = x0.to(module.device), y0.to(module.device), len0.to(module.device)
+    #
+    # opt = torch.optim.Adam(module.parameters(), lr=1e-3)
+    # module.train()
+    #
+    # for step in range(500):
+    #     opt.zero_grad()
+    #     out = module.net(x0, len0)[:, :, 0]
+    #     loss = module.masked_mse(out, y0, len0)
+    #     loss.backward()
+    #     opt.step()
+    #     if step % 50 == 0:
+    #         print(step, float(loss), float(out.mean()), float(out.std()))
