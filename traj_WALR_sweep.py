@@ -36,7 +36,7 @@ def train_model():
 
     wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=16, log_every_n_steps=2,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=100, log_every_n_steps=2, check_val_every_n_epoch=2,
                          default_root_dir="./lightning-test", logger=wandb_logger)
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
@@ -52,20 +52,20 @@ if __name__ == '__main__':
             'name': 'validation_loss'
         },
         'parameters': {
-            'hidden_size': {'values': [64,96,128,256,512]},
-            'num_layers': {'values': [2,3,4,5,6]},
+            'hidden_size': {'values': [64,96,128,256]},
+            'num_layers': {'values': [1,2,3]},
             'lr': {'max': 0.01, 'min': 0.0001},
-            'batch_size': {'values': [1,2,3,4]},
+            'batch_size': {'values': [16,32,64,96]},
         },
         'early_terminate': {
             'type': 'hyperband',
             'min_iter': 3
         },
-        'run_cap': 40,
+        'run_cap': 50,
     }
 
     sweep_id = wandb.sweep(sweep_config, project="VBN-modeling")
-    wandb.agent(sweep_id = sweep_id, count = 40,
+    wandb.agent(sweep_id = sweep_id, count = 50,
                 function = train_model)
 
     api = wandb.Api()

@@ -34,10 +34,10 @@ def train_model(run_config):
 
     # wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_steps=10000,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_steps=5000,
                          enable_progress_bar=True,
                          num_sanity_val_steps=0, check_val_every_n_epoch=5,
-                         default_root_dir="./lightning-test")
+                         default_root_dir="./traj_WALR-test")
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
 

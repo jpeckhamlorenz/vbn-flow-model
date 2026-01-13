@@ -16,3 +16,9 @@ archive/an_data/
 .DS_Store
 *.ckpt
 *.csv
+lightning-test/
+jplorenz-university-of-michigan/
+traj_WALR_train-test/
+traj_WALR-test/
+traj_NALO-test/
+traj_WALO-test/

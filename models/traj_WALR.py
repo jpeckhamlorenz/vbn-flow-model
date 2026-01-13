@@ -23,15 +23,16 @@ class WalrLSTM(torch.nn.Module):
 
 
 class SequenceDataset(torch.utils.data.Dataset):
-    def __init__(self, sequences):
+    def __init__(self, sequences, filenames):
         self.sequences = sequences
+        self.filenames = filenames
 
     def __len__(self):
         return len(self.sequences)
 
     def __getitem__(self, idx):
         input_seq, target_seq = self.sequences[idx]
-        return input_seq, target_seq, len(input_seq)
+        return input_seq, target_seq, len(input_seq), self.filenames[idx]
 
 
 class DataModule(pl.LightningDataModule):
@@ -77,6 +78,7 @@ class DataModule(pl.LightningDataModule):
             data_files.append(file_path)
 
         sequences = []
+        filenames = []
         for file in data_files:
             data = np.load(file)
             time = torch.tensor(data['time'], dtype=torch.float32)
@@ -96,42 +98,42 @@ class DataModule(pl.LightningDataModule):
             target_residuals = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
 
             sequences.append((input_features, target_residuals))
+            filenames.append(file.name)
 
-        # print(f"{list_path.name}: {len(data_files)} sequences") # todo: remove later James
 
-        return sequences
+        return sequences, filenames
 
     def _collate_fn(self, batch):
         batch.sort(key=lambda x: x[2], reverse=True)  # Sort by sequence length (descending)
-        inputs, targets, lengths = zip(*batch)
+        inputs, targets, lengths, names = zip(*batch)
 
         padded_inputs = pad_sequence(inputs, batch_first=True)
         padded_targets = pad_sequence(targets, batch_first=True)
-
         lengths = torch.tensor(lengths, dtype=torch.long)
-        return padded_inputs, padded_targets, lengths
+
+        return padded_inputs, padded_targets, lengths, list(names)
 
     def train_dataloader(self):
-        train_sequences = self._load_data(self.train_list)
-        train_dataset = SequenceDataset(train_sequences)
+        train_sequences, train_filenames = self._load_data(self.train_list)
+        train_dataset = SequenceDataset(train_sequences, train_filenames)
         return torch.utils.data.DataLoader(train_dataset, shuffle=True, collate_fn=self._collate_fn,
                                            batch_size = self.train_batch_size)
 
     def val_dataloader(self):
-        val_sequences = self._load_data(self.val_list)
-        val_dataset = SequenceDataset(val_sequences)
+        val_sequences, val_filenames = self._load_data(self.val_list)
+        val_dataset = SequenceDataset(val_sequences, val_filenames)
         return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn,
                                            batch_size = 16)
 
     def test_dataloader(self):
-        test_sequences = self._load_data(self.test_list)
-        test_dataset = SequenceDataset(test_sequences)
+        test_sequences, test_filenames = self._load_data(self.test_list)
+        test_dataset = SequenceDataset(test_sequences, test_filenames)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
                                            batch_size = 16)
 
     def predict_dataloader(self):
-        test_sequences = self._load_data(self.test_list)
-        test_dataset = SequenceDataset(test_sequences)
+        test_sequences, test_filenames = self._load_data(self.test_list)
+        test_dataset = SequenceDataset(test_sequences, test_filenames)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
                                            batch_size=16)
 
@@ -171,7 +173,7 @@ class LightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         # training_step defines the train loop.
-        input, target, length = batch
+        input, target, length, names = batch
         output = self.net(input, length)
         # loss = F.mse_loss(output[:,:,0], target)
         pred = output[:, :, 0]
@@ -180,7 +182,7 @@ class LightningModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        input, target, length = batch
+        input, target, length, names = batch
         output = self.net(input, length)
         # loss = F.mse_loss(output[:,:,0], target)
         pred = output[:, :, 0]
@@ -201,7 +203,7 @@ class LightningModule(pl.LightningModule):
         return loss
 
     def test_step(self, batch, batch_idx):
-        input, target, length = batch
+        input, target, length, names = batch
         output = self.net(input, length)
         # loss = F.mse_loss(output[:,:,0], target)
         pred = output[:, :, 0]
@@ -224,7 +226,7 @@ class LightningModule(pl.LightningModule):
         return optimizer
 
     def predict_step(self, batch, batch_idx):
-        input, target, length = batch
+        input, target, length, names = batch
         output = self.net(input, length)
         return output
 
@@ -259,3 +261,4 @@ def get_best_run(entity = 'jplorenz-university-of-michigan',
     run_id = best_run.id
 
     return run_id, run_config
+
