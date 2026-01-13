@@ -1,17 +1,17 @@
 import pytorch_lightning as pl
 import torch.nn.functional as F
 import wandb
-import os
+# import os
 import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from constants.filepath import PROJECT_PATH
-
+from pathlib import Path
 
 class WalrLSTM(torch.nn.Module):
-    def __init__(self, input_size=4, hidden_size=128, num_layers=3, output_size=1):
+    def __init__(self, input_size=3, hidden_size=128, num_layers=3, output_size=1):
         super(WalrLSTM, self).__init__()
-        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.lstm = torch.nn.LSTM(input_size, hidden_size, num_layers, dropout = 0.1, batch_first=True)
         self.fc = torch.nn.Linear(hidden_size, output_size)
 
     def forward(self, x, lengths):
@@ -35,18 +35,47 @@ class SequenceDataset(torch.utils.data.Dataset):
 
 
 class DataModule(pl.LightningDataModule):
-    def __init__(self, config,
-                   train_folderpath = os.path.join(PROJECT_PATH, 'dataset_exp/LSTM_training'),
-                   val_folderpath = os.path.join(PROJECT_PATH, 'dataset_exp/LSTM_validation'),
-                   test_folderpath = os.path.join(PROJECT_PATH, 'dataset_exp/LSTM_testing')):
+    def __init__(self, config, data_folderpath: Path,
+                   train_list = 'train.txt',
+                   val_list = 'val.txt',
+                   test_list = 'test.txt'):
         super().__init__()
-        self.train_folderpath = train_folderpath
-        self.val_folderpath = val_folderpath
-        self.test_folderpath = test_folderpath
+        self.data_folderpath = data_folderpath
+        self.train_list = train_list
+        self.val_list = val_list
+        self.test_list = test_list
         self.train_batch_size = config.batch_size
 
-    def _load_data(self,data_path, regularization_factor=1e9):
-        data_files = sorted([os.path.join(data_path, f) for f in os.listdir(data_path) if f.endswith('.npz')])
+    def _load_data(self, data_list,
+                   split_path: Path = Path('./splits'), regularization_factor=1e9):
+
+        # Resolve list path
+        list_path = Path(data_list)
+        if not list_path.is_absolute():
+            list_path = split_path / list_path
+
+        if not list_path.exists():
+            raise FileNotFoundError(f"Data list file not found: {list_path}")
+
+        # Read filenames from txt, must be .npz files
+        with open(list_path, "r") as f:
+            filenames = [
+                line.strip()
+                for line in f
+                if line.strip() and not line.strip().startswith("#") and line.strip().endswith(".npz")
+            ]
+
+        if len(filenames) == 0:
+            raise RuntimeError(f"No files listed in {list_path}")
+
+        # Resolve full paths and sanity check
+        data_files = []
+        for name in filenames:
+            file_path = self.data_folderpath / name
+            if not file_path.exists():
+                raise FileNotFoundError(f"Listed file not found: {file_path}")
+            data_files.append(file_path)
+
         sequences = []
         for file in data_files:
             data = np.load(file)
@@ -62,11 +91,14 @@ class DataModule(pl.LightningDataModule):
             except KeyError:
                 bead = torch.full_like(time, 1000*0.0029, dtype=torch.float32)
 
-            input_features = torch.stack((time, command, bead, analytical), dim=1)
-            # input_features = torch.stack((command, analytical), dim=1)
+            # input_features = torch.stack((time, command, bead, analytical), dim=1)
+            input_features = torch.stack((command, bead, analytical), dim=1)
             target_residuals = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
 
             sequences.append((input_features, target_residuals))
+
+        # print(f"{list_path.name}: {len(data_files)} sequences") # todo: remove later James
+
         return sequences
 
     def _collate_fn(self, batch):
@@ -80,32 +112,28 @@ class DataModule(pl.LightningDataModule):
         return padded_inputs, padded_targets, lengths
 
     def train_dataloader(self):
-        train_folderpath = self.train_folderpath
-        train_sequences = self._load_data(train_folderpath)
+        train_sequences = self._load_data(self.train_list)
         train_dataset = SequenceDataset(train_sequences)
         return torch.utils.data.DataLoader(train_dataset, shuffle=True, collate_fn=self._collate_fn,
                                            batch_size = self.train_batch_size)
 
     def val_dataloader(self):
-        val_folderpath = self.val_folderpath
-        val_sequences = self._load_data(val_folderpath)
+        val_sequences = self._load_data(self.val_list)
         val_dataset = SequenceDataset(val_sequences)
         return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size = 1)
+                                           batch_size = 16)
 
     def test_dataloader(self):
-        test_folderpath = self.test_folderpath
-        test_sequences = self._load_data(test_folderpath)
+        test_sequences = self._load_data(self.test_list)
         test_dataset = SequenceDataset(test_sequences)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size = 1)
+                                           batch_size = 16)
 
     def predict_dataloader(self):
-        test_folderpath = self.test_folderpath
-        test_sequences = self._load_data(test_folderpath)
+        test_sequences = self._load_data(self.test_list)
         test_dataset = SequenceDataset(test_sequences)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size=1)
+                                           batch_size=16)
 
 
 class LightningModule(pl.LightningModule):

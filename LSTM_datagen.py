@@ -299,7 +299,11 @@ def create_smoothed_dataset(avg_file):
     print(f'Saved smoothed dataset to {save_filepath}')
 
 
-def create_recursive_dataset(data_file):
+def create_recursive_dataset(data_file,
+                             trajectory_size = 4.5,
+                             window_overlap_step = 0.1,
+                             default_bead_width = 0.0029,
+                             downsample_value = 0.01,):
 
     print(f'Processing file: {data_file}')
 
@@ -318,16 +322,19 @@ def create_recursive_dataset(data_file):
     try:
         W_com = data['W_com']
     except KeyError:
-        W_com = np.ones(np.shape(time)) * 0.0029
+        W_com = np.ones(np.shape(time)) * default_bead_width
 
     # assert that the time arrays are all roughly uniformly 1 ms spacings
     dt_array = np.diff(time)
     assert np.all(np.abs(dt_array - dt_array[0]) < 1e-6), "Time array is not uniformly spaced!"
     dt = dt_array.mean().round(3)
 
+    #check that dt is not rounded to zero
+    assert dt > 0, "Time step is too small after rounding!"
+
     # downsample to 1 hundredth of a second if needed
 
-    if dt < 0.01:
+    if dt < downsample_value:
         downsample_factor = int(0.01 / dt)
         time = time[::downsample_factor]
         Q_com = Q_com[::downsample_factor]
@@ -338,7 +345,7 @@ def create_recursive_dataset(data_file):
         dt = 0.01
 
     # grab as many "sliding windows" of three-second intervals as you can, given the data file
-    trajectory_size = 4.5
+
     window_length = int(trajectory_size / dt)
     num_windows = len(time) - window_length + 1
 
@@ -346,7 +353,7 @@ def create_recursive_dataset(data_file):
 
 
     # do sliding windows every 0.1 seconds
-    step_size = int(0.1 / dt)
+    step_size = int(window_overlap_step / dt)
 
     for start_idx in range(0, num_windows, step_size):
         # for start_idx in range(num_windows):
@@ -474,6 +481,7 @@ if __name__ == '__main__':
 
         create_recursive_dataset(file)
 
+    # todo: make all those hardcoded parameters into function arguments
 
     # %% all finished
 

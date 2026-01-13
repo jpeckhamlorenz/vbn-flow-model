@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 # from tqdm import tqdm
 from constants.filepath import PROJECT_PATH
 from constants.plotting import font
+from pathlib import Path
 
 from models.traj_WALR import LightningModule, DataModule, DictToObject
 
@@ -28,12 +29,14 @@ def train_model(run_config):
 
     config = DictToObject(run_config)
     # wandb_logger = WandbLogger()
-    data = DataModule(config)
+    data = DataModule(config, data_folderpath=Path('./dataset/recursive_samples'))
     module = LightningModule(config)
 
     # wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_epochs=20, num_sanity_val_steps=0,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_steps=10000,
+                         enable_progress_bar=True,
+                         num_sanity_val_steps=0, check_val_every_n_epoch=5,
                          default_root_dir="./lightning-test")
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
@@ -45,9 +48,9 @@ if __name__ == '__main__':
 
     run_config = {
         'lr': 0.001,
-        'num_layers': 5,
-        'hidden_size': 256,
-        'batch_size': 1,
+        'num_layers': 2,
+        'hidden_size': 128,
+        'batch_size': 64,
     }
 
     trained_model, module, data = train_model(run_config)
@@ -61,11 +64,13 @@ if __name__ == '__main__':
     outputs = prediction[0].cpu().detach().numpy()[:, :, 0] / 1e9
 
     for input, output in zip(inputs, outputs):
-        time = input[0][:, 0].cpu().detach().numpy()
-        command = input[0][:, 1].cpu().detach().numpy() / 1e9
-        bead = input[0][:, 2].cpu().detach().numpy()
-        analytical = input[0][:, 3].cpu().detach().numpy() / 1e9
+        # time = input[0][:, 0].cpu().detach().numpy()
+        command = input[0][:, 0].cpu().detach().numpy() / 1e9
+        bead = input[0][:, 1].cpu().detach().numpy()
+        analytical = input[0][:, 2].cpu().detach().numpy() / 1e9
         target = input[1].cpu().detach().numpy() / 1e9
+
+        time = np.arange(0, len(command)*0.1, 0.1)
 
         # Plot the results
 

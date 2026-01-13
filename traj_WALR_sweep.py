@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 # from tqdm import tqdm
 from constants.filepath import PROJECT_PATH
 # from constants.plotting import font
+from pathlib import Path
 
 from models.traj_WALR import DataModule, LightningModule
 
@@ -30,7 +31,7 @@ def train_model():
                group = 'WALR')
     config = wandb.config
     wandb_logger = WandbLogger()
-    data = DataModule(config)
+    data = DataModule(config, data_folderpath = Path('./dataset/recursive_samples'))
     module = LightningModule(config)
 
     wandb_logger.watch(module.net)
