@@ -34,9 +34,9 @@ def train_model(run_config):
 
     # wandb_logger.watch(module.net)
 
-    trainer = pl.Trainer(accelerator='mps', devices=1, max_steps=5000,
-                         enable_progress_bar=True,
-                         num_sanity_val_steps=0, check_val_every_n_epoch=5,
+    trainer = pl.Trainer(accelerator='mps', devices=1, max_steps=1000,
+                         enable_progress_bar=True, log_every_n_steps=2,
+                         num_sanity_val_steps=0, check_val_every_n_epoch=5, gradient_clip_val=1.0,
                          default_root_dir="./traj_WALR-test")
     #     wandb.require(experiment="service")
     trainer.fit(module, data)
@@ -47,10 +47,11 @@ def train_model(run_config):
 if __name__ == '__main__':
 
     run_config = {
-        'lr': 0.001,
-        'num_layers': 2,
-        'hidden_size': 128,
+        'lr': 0.01,
+        'num_layers': 1,
+        'hidden_size': 64,
         'batch_size': 64,
+        'huber_delta': 1.0,
     }
 
     trained_model, module, data = train_model(run_config)

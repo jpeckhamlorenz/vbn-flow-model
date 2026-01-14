@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence, pad_packed_sequence
 from constants.filepath import PROJECT_PATH
+from collections import defaultdict
 from pathlib import Path
 
 class WalrLSTM(torch.nn.Module):
@@ -46,9 +47,89 @@ class DataModule(pl.LightningDataModule):
         self.val_list = val_list
         self.test_list = test_list
         self.train_batch_size = config.batch_size
+        self.huber_delta = config.huber_delta if hasattr(config, 'huber_delta') else 1.0
+        self.normalize = True
+        self.norm_epsilon  = 1e-8
+        self.norm_stats = None
+        self.regularization_factor = 1e9
+
+    def setup(self, stage=None):
+        if self.normalize and self.norm_stats is None:
+            train_files = self._resolve_files(self.train_list)
+            self.norm_stats = self._compute_norm_stats(train_files)
+
+
+    def _resolve_files(self, data_list, split_path: Path = Path("./splits")):
+        # Resolve list path
+        list_path = Path(data_list)
+        if not list_path.is_absolute():
+            list_path = split_path / list_path
+        if not list_path.exists():
+            raise FileNotFoundError(f"Data list file not found: {list_path}")
+
+        with open(list_path, "r") as f:
+            rel_names = [
+                line.strip()
+                for line in f
+                if line.strip() and not line.strip().startswith("#") and line.strip().endswith(".npz")
+            ]
+        if len(rel_names) == 0:
+            raise RuntimeError(f"No files listed in {list_path}")
+
+        files = []
+        for name in rel_names:
+            p = self.data_folderpath / name
+            if not p.exists():
+                raise FileNotFoundError(f"Listed file not found: {p}")
+            files.append(p)
+
+        return files
+
+    def _compute_norm_stats(self, data_files):
+        """
+        Compute mean/std per channel using TRAIN FILES ONLY.
+        Stats are computed on the same scaled values you feed to the network.
+        """
+        # We'll accumulate sums and sumsq for: command, bead, analytical, target
+        sums = {k: 0.0 for k in ["command", "bead", "analytical", "target"]}
+        sqs  = {k: 0.0 for k in ["command", "bead", "analytical", "target"]}
+        counts = {k: 0 for k in ["command", "bead", "analytical", "target"]}
+
+        for file in data_files:
+            d = np.load(file)
+
+            command = (self.regularization_factor * d["Q_com"]).astype(np.float64)
+            analytical = (self.regularization_factor * d["Q_vbn"]).astype(np.float64)
+            target = (self.regularization_factor * d["Q_res"]).astype(np.float64)
+
+            if "W_com" in d:
+                bead = (1000.0 * d["W_com"]).astype(np.float64)
+            else:
+                # match your default bead behavior
+                bead = np.full_like(command, 1000.0 * 0.0029, dtype=np.float64)
+
+            # Flatten (time dimension)
+            for k, x in [("command", command), ("bead", bead), ("analytical", analytical), ("target", target)]:
+                x = x.reshape(-1)
+                sums[k] += x.sum()
+                sqs[k]  += (x * x).sum()
+                counts[k] += x.size
+
+        mean = {k: sums[k] / max(counts[k], 1) for k in sums}
+        std = {}
+        for k in sums:
+            var = sqs[k] / max(counts[k], 1) - mean[k] ** 2
+            std[k] = float(np.sqrt(max(var, 0.0)) + self.norm_epsilon)
+
+        # store as torch tensors for fast use
+        stats = {
+            "mean": {k: torch.tensor(mean[k], dtype=torch.float32) for k in mean},
+            "std":  {k: torch.tensor(std[k], dtype=torch.float32) for k in std},
+        }
+        return stats
 
     def _load_data(self, data_list,
-                   split_path: Path = Path('./splits'), regularization_factor=1e9):
+                   split_path: Path = Path('./splits')):
 
         # Resolve list path
         list_path = Path(data_list)
@@ -81,25 +162,38 @@ class DataModule(pl.LightningDataModule):
         filenames = []
         for file in data_files:
             data = np.load(file)
-            time = torch.tensor(data['time'], dtype=torch.float32)
+            # time = torch.tensor(data['time'], dtype=torch.float32)
             # time = torch.tensor(data['time'] - data['time'][0] + 0.5, dtype=torch.float32)
-            command = torch.tensor(regularization_factor * data['Q_com'], dtype=torch.float32)
-            analytical = torch.tensor(regularization_factor * data['Q_vbn'], dtype=torch.float32)
+            command = torch.tensor(self.regularization_factor * data['Q_com'], dtype=torch.float32)
+            analytical = torch.tensor(self.regularization_factor * data['Q_vbn'], dtype=torch.float32)
 
             try:
                 bead = torch.tensor(1000*data['W_com'], dtype=torch.float32)
                 # input('press enter to continue james lorenz')
 
             except KeyError:
-                bead = torch.full_like(time, 1000*0.0029, dtype=torch.float32)
+                bead = torch.full_like(command, 1000*0.0029, dtype=torch.float32)
+
+            target_residuals = torch.tensor(self.regularization_factor * data['Q_res'], dtype=torch.float32)
+
+            if self.normalize:
+                # make sure setup() has run (safe even if called repeatedly)
+                if self.norm_stats is None:
+                    self.norm_stats = self._compute_norm_stats(self._resolve_files(self.train_list),
+                                                              regularization_factor=self.regularization_factor)
+
+                m = self.norm_stats["mean"]
+                s = self.norm_stats["std"]
+
+                command = (command - m["command"]) / s["command"]
+                bead = (bead - m["bead"]) / s["bead"]
+                analytical = (analytical - m["analytical"]) / s["analytical"]
+                target_residuals = (target_residuals - m["target"]) / s["target"]
 
             # input_features = torch.stack((time, command, bead, analytical), dim=1)
             input_features = torch.stack((command, bead, analytical), dim=1)
-            target_residuals = torch.tensor(regularization_factor * data['Q_res'], dtype=torch.float32)
-
             sequences.append((input_features, target_residuals))
             filenames.append(file.name)
-
 
         return sequences, filenames
 
@@ -123,19 +217,19 @@ class DataModule(pl.LightningDataModule):
         val_sequences, val_filenames = self._load_data(self.val_list)
         val_dataset = SequenceDataset(val_sequences, val_filenames)
         return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size = 16)
+                                           batch_size = 32)
 
     def test_dataloader(self):
         test_sequences, test_filenames = self._load_data(self.test_list)
         test_dataset = SequenceDataset(test_sequences, test_filenames)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size = 16)
+                                           batch_size = 32)
 
     def predict_dataloader(self):
         test_sequences, test_filenames = self._load_data(self.test_list)
         test_dataset = SequenceDataset(test_sequences, test_filenames)
         return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
-                                           batch_size=16)
+                                           batch_size=32)
 
 
 class LightningModule(pl.LightningModule):
@@ -143,6 +237,7 @@ class LightningModule(pl.LightningModule):
         super().__init__()
         self.net = WalrLSTM(hidden_size=config.hidden_size, num_layers = config.num_layers)
         self.lr = config.lr
+        self.huber_delta = config.huber_delta if hasattr(config, 'huber_delta') else 1.0
 
     #         self.save_hyperparameters()  # **wandb process fail to finish if this is uncommented**
     def _r2_score(self, pred, target):
@@ -167,6 +262,30 @@ class LightningModule(pl.LightningModule):
         diff2 = (pred - target) ** 2
         return (diff2 * mask).sum() / mask.sum().clamp_min(1)
 
+    def masked_huber_loss(self, pred, target, lengths, delta=1.0):
+        """
+        pred, target: [B, T]
+        lengths: [B]
+        """
+        B, T = pred.shape
+        device = pred.device
+
+        # mask: [B, T]
+        mask = torch.arange(T, device=device)[None, :] < lengths[:, None]
+
+        # elementwise huber
+        diff = pred - target
+        abs_diff = diff.abs()
+
+        quadratic = torch.minimum(abs_diff, torch.tensor(delta, device=device))
+        linear = abs_diff - quadratic
+        loss = 0.5 * quadratic ** 2 + delta * linear
+
+        # apply mask and normalize
+        loss = (loss * mask).sum() / mask.sum()
+
+        return loss
+
     def _percent_within(self, pred, target, tolerance=0.10):
         error = torch.abs(pred - target) / torch.clamp(torch.abs(target), min=1e-9)
         return torch.mean((error <= tolerance).float())
@@ -177,8 +296,10 @@ class LightningModule(pl.LightningModule):
         output = self.net(input, length)
         # loss = F.mse_loss(output[:,:,0], target)
         pred = output[:, :, 0]
-        loss = self.masked_mse(pred, target, length)
-        self.log('train/loss', loss, prog_bar=True)
+        # loss = self.masked_mse(pred, target, length)
+        loss = self.masked_huber_loss(pred, target, length, delta=self.huber_delta)
+        self.log('train/loss', loss, prog_bar=True, on_step=True, on_epoch=True,
+                 batch_size = int(length.sum().item()))
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -186,7 +307,8 @@ class LightningModule(pl.LightningModule):
         output = self.net(input, length)
         # loss = F.mse_loss(output[:,:,0], target)
         pred = output[:, :, 0]
-        loss = self.masked_mse(pred, target, length)
+        # loss = self.masked_mse(pred, target, length)
+        loss = self.masked_huber_loss(pred, target, length, delta=self.huber_delta)
         r2_score = self._r2_score(output[:, :, 0], target)
         rmse_accuracy = self._rmse_accuracy(output[:, :, 0], target)
         percent_within = self._percent_within(output[:, :, 0], target)
@@ -194,8 +316,8 @@ class LightningModule(pl.LightningModule):
             "validate/loss": loss,
             "validate/r2-score": r2_score,
             "validate/rmse-accuracy": rmse_accuracy,
-            "validate/percent-within": percent_within,
-            })
+            "validate/percent-within": percent_within},
+            on_step=False, on_epoch=True, batch_size = int(length.sum().item()))
         # self.log('validation-loss', loss)
         # print(f'Validation Loss: {loss.item()}')
         # import ipdb; ipdb.set_trace()
@@ -207,7 +329,8 @@ class LightningModule(pl.LightningModule):
         output = self.net(input, length)
         # loss = F.mse_loss(output[:,:,0], target)
         pred = output[:, :, 0]
-        loss = self.masked_mse(pred, target, length)
+        # loss = self.masked_mse(pred, target, length)
+        loss = self.masked_huber_loss(pred, target, length, delta=self.huber_delta)
         r2_score = self._r2_score(output[:, :, 0], target)
         rmse_accuracy = self._rmse_accuracy(output[:, :, 0], target)
         percent_within = self._percent_within(output[:, :, 0], target)
@@ -215,8 +338,8 @@ class LightningModule(pl.LightningModule):
             "test/loss": loss,
             "test/r2-score": r2_score,
             "test/rmse-accuracy": rmse_accuracy,
-            "test/percent-within": percent_within,
-        })
+            "test/percent-within": percent_within},
+            on_step=False, on_epoch=True, batch_size = int(length.sum().item()))
         # self.log('test-loss', loss)
         return loss
 

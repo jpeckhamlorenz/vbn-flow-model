@@ -256,7 +256,8 @@ def stitch_parent(parent_name, data_dir, pred_map, scale=1e9):
         w_com = d["W_com"]
         pred_res = pred_map[fname]
 
-        pred_flow = q_vbn + pred_res  # residual model
+        pred_flow = q_vbn + pred_res/scale  # residual model
+        # pred_flow = pred_res / scale  # direct model
 
         sl = slice(s, s + T)
         acc["pred"][sl] += pred_flow
@@ -279,10 +280,10 @@ def plot_stitched(parent, data_dir, pred_map):
     t, acc = stitch_parent(parent, data_dir, pred_map)
 
     plt.figure(figsize=(12, 5))
-    plt.plot(t, acc["tru"] / 1e0, label="Truth")
-    plt.plot(t, acc["vbn"] / 1e0, "--", label="Analytical")
-    plt.plot(t, acc["pred"] / 1e9 + acc["vbn"], label="Predicted")
-    plt.plot(t, acc["com"] / 1e0, alpha=0.6, label="Command")
+    plt.plot(t, acc["tru"], label="Truth")
+    plt.plot(t, acc["vbn"], "--", label="Analytical")
+    plt.plot(t, acc["pred"], label="Predicted")
+    plt.plot(t, acc["com"], alpha=0.6, label="Command")
     plt.grid(True)
     plt.legend()
     plt.title(parent)
@@ -313,18 +314,24 @@ if __name__ == '__main__':
     # # save_tested_model_plots(fig_flows, fig_residuals, fig_error, leg_flows, leg_residuals, leg_error)
 
     # %% test local model\
-    ckpt_path = Path("traj_WALR-test/lightning_logs/version_1/checkpoints/epoch=159-step=4960.ckpt")
+    ckpt_path = Path("traj_WALR-test/lightning_logs/version_6/checkpoints/epoch=29-step=930.ckpt")
 
     # If you need the config explicitly
     run_config = {
-        "lr": 0.001,
-        "num_layers": 2,
-        "hidden_size": 128,
-        "batch_size": 64,
+        'lr': 0.01,
+        'num_layers': 1,
+        'hidden_size': 64,
+        'batch_size': 64,
+        'huber_delta': 1.0,
     }
 
     config = DictToObject(run_config)
     data = DataModule(config, data_folderpath=Path('./dataset/recursive_samples'))
+    data.setup("fit")
+    print("norm stats target mean/std:",
+          float(data.norm_stats["mean"]["target"]),
+          float(data.norm_stats["std"]["target"])) # todo: remove later James
+
     # Load model
     module = LightningModule.load_from_checkpoint(
         ckpt_path,
@@ -332,6 +339,8 @@ if __name__ == '__main__':
     )
 
     pred_map = {}  # filename -> predicted residual [T]
+
+    printed = False  # todo: remove later James
 
     module.eval()
     with torch.no_grad():
@@ -345,10 +354,27 @@ if __name__ == '__main__':
             out = module.net(inputs, lengths)[:, :, 0]  # [B, T]
             out = out.cpu().numpy()
 
+            if not printed:
+                printed = True
+                print("pred_norm mean/std:", out.mean(), out.std())
+                print("tgt_norm mean/std:", targets.cpu().numpy().mean(), targets.cpu().numpy().std()) # todo: remove later James
+
+            m = data.norm_stats["mean"]["target"].detach().cpu().numpy()
+            s = data.norm_stats["std"]["target"].detach().cpu().numpy()
+
             for fname, pred in zip(filenames, out):
-                pred_map[fname] = pred
+                # pred_map[fname] = pred
+
+
+                pred_phys = pred * s + m
+                pred_map[fname] = pred_phys
+
+
 
     DATA_DIR = Path("./dataset/recursive_samples")
+
+    print("pred_map size:", len(pred_map))
+    print("example keys:", list(pred_map.keys())[:3])
 
     plot_stitched(
         parent="flowrate_pattern_03_averaged_smoothed",
