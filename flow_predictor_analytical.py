@@ -99,6 +99,8 @@ def flow_predictor(
     Q_com = np.interp(t, ts, input_flowrate)
     Q_out = np.array(x[:, 1:] * pmp.EXTRUSION_RATIO).ravel()
 
+    print('Analytical flow prediction complete.')
+
     if match_time_steps:
         return np.interp(ts, t, t), np.interp(ts, t, W_com), np.interp(ts, t, Q_com), np.interp(ts, t, Q_out)
     else:

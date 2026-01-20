@@ -21,51 +21,6 @@ import re
 from collections import defaultdict
 from pathlib import Path
 
-# %%
-
-# entity = 'jplorenz-university-of-michigan'
-# project = 'VBN-modeling'
-# sweep_id = '6ksey94e'
-
-
-#%%
-
-# sweep_list= wandb.Api().project(project).sweeps()
-# sweep_id = sweep_list[1].id
-
-# api = wandb.Api()
-# sweep = api.sweep(entity + '/' + project + '/' + sweep_id)
-#
-# best_run = sweep.best_run()
-
-# run_id = best_run.id
-# run_name = best_run.name
-#
-# print("Best Run Name:", run_name)
-# print("Best Run ID:", run_id)
-# print(best_run.config)
-
-
-
-# %%
-
-# class DictToObject:
-#     def __init__(self, dictionary):
-#         for key, value in dictionary.items():
-#             setattr(self, key, value)
-
-# run_config = DictToObject(best_run.config)
-#
-# checkpoint_id = os.listdir(
-#     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints')
-#     )[0] # Assuming only one checkpoint file exists
-#
-# model = LightningModule.load_from_checkpoint(
-#     os.path.join(PROJECT_PATH, project, best_run.id, 'checkpoints', checkpoint_id),
-#     config = run_config)
-
-# trainer = pl.Trainer()
-# trainer.test(model)
 
 #%%
 def test_model(run_id, run_config,
@@ -222,6 +177,85 @@ def save_tested_model_plots(fig_flows, fig_residuals, fig_error, leg_flows, leg_
 
 WINDOW_RE = re.compile(r"_window_(\d+)\.npz")
 
+PARENT_RE = re.compile(r"^(.*)_window_\d+\.npz$")
+
+def parent_from_filename(name: str) -> str:
+    m = PARENT_RE.match(name)
+    if m is None:
+        # fallback: strip extension
+        return Path(name).stem
+    return m.group(1)
+
+def list_parents_from_dir(data_dir: Path):
+    """Return dict parent -> sorted list of window indices available in data_dir."""
+    parents = defaultdict(list)
+    for p in data_dir.glob("*.npz"):
+        m = WINDOW_RE.search(p.name)
+        if not m:
+            continue
+        parents[parent_from_filename(p.name)].append(int(m.group(1)))
+
+    # sort windows
+    for k in parents:
+        parents[k].sort()
+    return dict(parents)
+
+def print_parent_menu(parents: dict, top_n: int | None = None):
+    """Pretty-print parents with counts and window span."""
+    items = []
+    for parent, wins in parents.items():
+        if len(wins) == 0:
+            continue
+        items.append((parent, len(wins), wins[0], wins[-1]))
+
+    # group-ish sort: by prefix then name
+    def group_key(parent):
+        if parent.startswith("corner"): return (0, parent)
+        if parent.startswith("flowrate"): return (1, parent)
+        if parent.startswith("twostep"): return (2, parent)
+        return (3, parent)
+
+    items.sort(key=lambda x: group_key(x[0]))
+
+    if top_n is not None:
+        items = items[:top_n]
+
+    print("\nAvailable parent trajectories:")
+    for parent, n, w0, w1 in items:
+        print(f"  - {parent:45s}  windows={n:4d}  span=[{w0}, {w1}]")
+    print()
+
+def print_plottable_parents(predicted_parents):
+    print("\nParents available for plotting (predictions exist):")
+    for p in predicted_parents:
+        print(f"  - {p}")
+    print()
+
+def resolve_parent(user_parent: str, predicted_parents: list[str]) -> str:
+    # exact match
+    if user_parent in predicted_parents:
+        return user_parent
+
+    # partial match
+    matches = [p for p in predicted_parents if user_parent in p]
+
+    if len(matches) == 1:
+        print(f"Using closest match: {matches[0]}")
+        return matches[0]
+
+    if len(matches) > 1:
+        print(f"Ambiguous parent '{user_parent}'. Possible matches:")
+        for m in matches:
+            print("  -", m)
+        raise ValueError("Please choose a more specific parent name.")
+
+    # no matches
+    print(f"Parent '{user_parent}' has no predictions.")
+    print("Available parents:")
+    for p in predicted_parents:
+        print("  -", p)
+    raise ValueError("Invalid parent selection.")
+
 def parse_window_idx(name: str) -> int:
     m = WINDOW_RE.search(name)
     if m is None:
@@ -300,9 +334,9 @@ def plot_stitched(parent, data_dir, pred_map):
 
 if __name__ == '__main__':
 
-    # %% test best model from sweep
+    # %% test best model from sweep (depriecated, for non-recursive testing)
 
-    # run_id, run_config = get_best_run(sweep_id='sgbgw2hc')
+    # run_id, run_config = get_best_run(sweep_id='mnywg829')
     #
     # trainer, prediction = test_model(run_id, run_config)
     #
@@ -313,34 +347,50 @@ if __name__ == '__main__':
     #
     # # save_tested_model_plots(fig_flows, fig_residuals, fig_error, leg_flows, leg_residuals, leg_error)
 
-    # %% test local model\
-    ckpt_path = Path("traj_WALR-test/lightning_logs/version_6/checkpoints/epoch=29-step=930.ckpt")
+    # %% test local model
+    # ckpt_path = Path("traj_WALR-test/lightning_logs/version_6/checkpoints/epoch=29-step=930.ckpt")
+    #
+    # # If you need the config explicitly
+    # config = {
+    #     'lr': 0.01,
+    #     'num_layers': 1,
+    #     'hidden_size': 64,
+    #     'batch_size': 64,
+    #     'huber_delta': 1.0,
+    # }
+    #
+    # run_config = DictToObject(config)
 
-    # If you need the config explicitly
-    run_config = {
-        'lr': 0.01,
-        'num_layers': 1,
-        'hidden_size': 64,
-        'batch_size': 64,
-        'huber_delta': 1.0,
-    }
+    # %% test sweep model
 
-    config = DictToObject(run_config)
-    data = DataModule(config, data_folderpath=Path('./dataset/recursive_samples'))
+    parent_input = "flowrate"
+
+    run_id, run_config = get_best_run(sweep_id='mnywg829')
+
+    ckpt_dir = Path('./VBN-modeling') / run_id / 'checkpoints'
+    ckpt_path = sorted(ckpt_dir.glob('*.ckpt'))[-1].absolute()
+
+
+    # %%
+
+
+    data = DataModule(run_config, data_folderpath=Path('./dataset/recursive_samples'))
     data.setup("fit")
-    print("norm stats target mean/std:",
-          float(data.norm_stats["mean"]["target"]),
-          float(data.norm_stats["std"]["target"])) # todo: remove later James
+
 
     # Load model
     module = LightningModule.load_from_checkpoint(
         ckpt_path,
-        config=config,  # <-- must match __init__ signature
+        config=run_config,  # <-- must match __init__ signature
     )
 
     pred_map = {}  # filename -> predicted residual [T]
 
-    printed = False  # todo: remove later James
+
+    m = float(data.norm_stats["mean"]["target"])
+    s = float(data.norm_stats["std"]["target"])
+
+    print(m, s)
 
     module.eval()
     with torch.no_grad():
@@ -354,13 +404,8 @@ if __name__ == '__main__':
             out = module.net(inputs, lengths)[:, :, 0]  # [B, T]
             out = out.cpu().numpy()
 
-            if not printed:
-                printed = True
-                print("pred_norm mean/std:", out.mean(), out.std())
-                print("tgt_norm mean/std:", targets.cpu().numpy().mean(), targets.cpu().numpy().std()) # todo: remove later James
-
-            m = data.norm_stats["mean"]["target"].detach().cpu().numpy()
-            s = data.norm_stats["std"]["target"].detach().cpu().numpy()
+            # m = data.norm_stats["mean"]["target"].detach().cpu().numpy()  # todo: remove later James
+            # s = data.norm_stats["std"]["target"].detach().cpu().numpy()
 
             for fname, pred in zip(filenames, out):
                 # pred_map[fname] = pred
@@ -373,11 +418,30 @@ if __name__ == '__main__':
 
     DATA_DIR = Path("./dataset/recursive_samples")
 
-    print("pred_map size:", len(pred_map))
-    print("example keys:", list(pred_map.keys())[:3])
+    parents = list_parents_from_dir(DATA_DIR)
+    # print_parent_menu(parents)
+
+    predicted_parents = sorted({
+        parent_from_filename(fname)
+        for fname in pred_map.keys()
+    })
+
+    parent = resolve_parent(parent_input, predicted_parents)
+
+    if parent not in parents:
+        # allow partial match
+        matches = [p for p in parents if parent in p]
+        if len(matches) == 1:
+            print(f"Parent '{parent}' not found; using closest match: '{matches[0]}'")
+            parent = matches[0]
+        else:
+            print(f"Parent '{parent}' not found. Did you mean one of these?")
+            for m in matches[:20]:
+                print("  -", m)
+            raise ValueError("Choose a valid parent from the menu above.")
 
     plot_stitched(
-        parent="flowrate_pattern_03_averaged_smoothed",
+        parent= parent,
         data_dir=DATA_DIR,
         pred_map=pred_map,
     )

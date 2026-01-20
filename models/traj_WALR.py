@@ -176,6 +176,9 @@ class DataModule(pl.LightningDataModule):
 
             target_residuals = torch.tensor(self.regularization_factor * data['Q_res'], dtype=torch.float32)
 
+
+
+
             if self.normalize:
                 # make sure setup() has run (safe even if called repeatedly)
                 if self.norm_stats is None:
@@ -184,6 +187,7 @@ class DataModule(pl.LightningDataModule):
 
                 m = self.norm_stats["mean"]
                 s = self.norm_stats["std"]
+
 
                 command = (command - m["command"]) / s["command"]
                 bead = (bead - m["bead"]) / s["bead"]
@@ -210,25 +214,25 @@ class DataModule(pl.LightningDataModule):
     def train_dataloader(self):
         train_sequences, train_filenames = self._load_data(self.train_list)
         train_dataset = SequenceDataset(train_sequences, train_filenames)
-        return torch.utils.data.DataLoader(train_dataset, shuffle=True, collate_fn=self._collate_fn,
+        return torch.utils.data.DataLoader(train_dataset, shuffle=True, collate_fn=self._collate_fn, num_workers=0,
                                            batch_size = self.train_batch_size)
 
     def val_dataloader(self):
         val_sequences, val_filenames = self._load_data(self.val_list)
         val_dataset = SequenceDataset(val_sequences, val_filenames)
-        return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn,
+        return torch.utils.data.DataLoader(val_dataset, shuffle=False, collate_fn=self._collate_fn, num_workers=0,
                                            batch_size = 32)
 
     def test_dataloader(self):
         test_sequences, test_filenames = self._load_data(self.test_list)
         test_dataset = SequenceDataset(test_sequences, test_filenames)
-        return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
+        return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn, num_workers=0,
                                            batch_size = 32)
 
     def predict_dataloader(self):
         test_sequences, test_filenames = self._load_data(self.test_list)
         test_dataset = SequenceDataset(test_sequences, test_filenames)
-        return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn,
+        return torch.utils.data.DataLoader(test_dataset, shuffle=False, collate_fn=self._collate_fn, num_workers=0,
                                            batch_size=32)
 
 
@@ -372,8 +376,23 @@ def get_best_run(entity = 'jplorenz-university-of-michigan',
     runs = api.sweep(entity + '/' + project + '/' + sweep_id).runs
 
     run_losses = {}
+
+    bad_runs = []
+
     for run in runs:
-        run_losses[run.id] = run.summary['validate/loss']
+        val = run.summary.get("validate/loss", None)
+        try:
+            val = float(val)
+            run_losses[run.id] = val
+        except (TypeError, ValueError):
+            bad_runs.append((run.id, val))
+
+    print("Skipped runs:")
+    for rid, v in bad_runs:
+        print(rid, v)
+
+    # for run in runs:
+    #     run_losses[run.id] = run.summary['validate/loss']
 
     run_losses_sorted = sorted(run_losses.items(), key=lambda item: item[1])
 
