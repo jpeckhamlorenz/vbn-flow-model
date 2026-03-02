@@ -314,10 +314,10 @@ def plot_stitched(parent, data_dir, pred_map):
     t, acc = stitch_parent(parent, data_dir, pred_map)
 
     plt.figure(figsize=(12, 5))
-    plt.plot(t, acc["tru"], label="Truth")
-    plt.plot(t, acc["vbn"], "--", label="Analytical")
-    plt.plot(t, acc["pred"], label="Predicted")
-    plt.plot(t, acc["com"], alpha=0.6, label="Command")
+    plt.plot(t, acc["tru"], color = 'red', label="Truth")
+    plt.plot(t, acc["vbn"], color = 'green', label="Analytical")
+    plt.plot(t, acc["pred"], color = 'blue', label="Predicted")
+    plt.plot(t, acc["com"],"--", alpha=0.6, color = 'black', label="Command")
     plt.grid(True)
     plt.legend()
     plt.title(parent)
@@ -363,7 +363,7 @@ if __name__ == '__main__':
 
     # %% test sweep model
 
-    parent_input = "flowrate"
+    parent_input = ("corner")
 
     run_id, run_config = get_best_run(sweep_id='mnywg829')
 

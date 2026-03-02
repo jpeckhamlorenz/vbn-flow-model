@@ -7,6 +7,7 @@ from flow_predictor_analytical import flow_predictor
 from constants.filepath import PROJECT_PATH
 
 
+# %%
 def create_dataset_from_sim(sim_filepath, save_filepath):
     """
     Create a dataset from the simulation samples in the specified directory.

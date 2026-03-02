@@ -7,18 +7,18 @@ plt.close("all")
 from inputs.pathgen import corner_flowmatch, training_twosteps, twostep
 from flow_predictor_lstm import flow_predictor_lstm_windowed, WindowParams
 
-# test = twostep(
-#         dt = 0.1,  # time step [s]
-#         tmax = 20,  # maximum simulation time [s]
-#         flowrate_up = 0.7,  # step-up inlet flow rate [mL/min]
-#         flowrate_down = 0.001,  # step-down inlet flow rate [mL/min]
-#         t_flowup = 5,  # time of step-up command [s] (TYP: 0.001)
-#         t_flowdown = 17,  # time of step-down command [s]
-#         beadwidth_down = 0.0008,  # step-down bead width [m]
-#         beadwidth_up = 0.0029, # step-up bead width [m]
-#         t_beaddown = 50,  # time of step-up command [s]
-#         t_beadup = 170,  # time of step-down command [s]
-# )
+test = twostep(
+        dt = 0.1,  # time step [s]
+        tmax = 20,  # maximum simulation time [s]
+        flowrate_up = 0.7,  # step-up inlet flow rate [mL/min]
+        flowrate_down = 0.001,  # step-down inlet flow rate [mL/min]
+        t_flowup = 5,  # time of step-up command [s] (TYP: 0.001)
+        t_flowdown = 17,  # time of step-down command [s]
+        beadwidth_down = 0.0008,  # step-down bead width [m]
+        beadwidth_up = 0.0029, # step-up bead width [m]
+        t_beaddown = 50,  # time of step-up command [s]
+        t_beadup = 170,  # time of step-down command [s]
+)
 
 
 # test = training_twosteps(flowrate_magnitudes=[[0.2, 0.001], [0.48, 0.001]],
@@ -28,16 +28,16 @@ from flow_predictor_lstm import flow_predictor_lstm_windowed, WindowParams
 #                          dt=0.001,
 #                          tmax=20)
 
-test = corner_flowmatch(
-    dt=0.001,  # time step [s]
-    a_tool=100,  # toolhead acceleration [mm/s^2]
-    v_tool=25,  # toolhead velocity [mm/s]
-    precorner_dist=180,  # straight-line distance before the corner [mm] (TYP: 180)
-    postcorner_dist=30,  # straight-line distance after the corner [mm]  (TYP: 30)
-    layer_height=0.15,  # layer height [mm]
-    nominal_beadwidth=0.9,  # diameter of the nozzle [mm]
-    pump='pump_viscotec_outdated'
-)
+# test = corner_flowmatch(
+#     dt=0.001,  # time step [s]
+#     a_tool=100,  # toolhead acceleration [mm/s^2]
+#     v_tool=25,  # toolhead velocity [mm/s]
+#     precorner_dist=180,  # straight-line distance before the corner [mm] (TYP: 180)
+#     postcorner_dist=30,  # straight-line distance after the corner [mm]  (TYP: 30)
+#     layer_height=0.15,  # layer height [mm]
+#     nominal_beadwidth=1.3,  # diameter of the nozzle [mm]
+#     pump='pump_viscotec_outdated'
+# )
 
 time, command, bead = test.pathgen()
 time = np.asarray(time)
@@ -103,7 +103,7 @@ Q_pred, Q_vbn, Q_res_pred = flow_predictor_lstm_windowed(
 )
 
 # --- plots
-plot_skip = 0.2
+plot_skip = 2
 mask = time > plot_skip
 
 plt.figure(figsize=(12, 5))
