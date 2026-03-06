@@ -138,6 +138,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--Q_max", type=float, default=1e-6)
     p.add_argument("--w_min", type=float, default=0.0005)
     p.add_argument("--w_max", type=float, default=0.005)
+    p.add_argument("--w_delta_plus",  type=float, default=None,
+                   help="Max bead width ABOVE W_com[k] at each timestep [m]. "
+                        "E.g. 2e-4 (= 0.2 mm). Intersected with --w_max. "
+                        "None = no relative upper bound (only --w_max applies).")
+    p.add_argument("--w_delta_minus", type=float, default=None,
+                   help="Max bead width BELOW W_com[k] at each timestep [m]. "
+                        "E.g. 4e-4 (= 0.4 mm). Intersected with --w_min. "
+                        "None = no relative lower bound (only --w_min applies).")
 
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     p.add_argument("--no_show", action="store_true",
@@ -615,10 +623,11 @@ def main() -> None:
 
     from dynamics import HybridDynamics
 
-    # iLQR cost / bounds (shared)
+    # iLQR cost / absolute bounds (shared across trajectories)
     R_mat = np.diag(args.R_diag)
-    u_min = np.array([args.Q_min, args.w_min])
-    u_max = np.array([args.Q_max, args.w_max])
+    Q_min_abs, Q_max_abs = args.Q_min, args.Q_max
+    w_min_abs, w_max_abs = args.w_min, args.w_max
+    _use_rel_bounds = args.w_delta_plus is not None or args.w_delta_minus is not None
 
     # Accumulate per-trajectory metrics for final summary table
     results: list[dict] = []
@@ -687,9 +696,28 @@ def main() -> None:
         # ---- iLQR optimisation -----------------------------------------------
         _sep(f"iLQR — {parent_id}")
         q_ref = Q_com[:N_ilqr].copy()
+
+        # Build control bounds — time-varying if relative width deltas requested
+        if _use_rel_bounds:
+            dp = args.w_delta_plus  if args.w_delta_plus  is not None else np.inf
+            dm = args.w_delta_minus if args.w_delta_minus is not None else np.inf
+            w_lo = np.maximum(w_min_abs, W_com[:N_ilqr] - dm)  # [N_ilqr]
+            w_hi = np.minimum(w_max_abs, W_com[:N_ilqr] + dp)  # [N_ilqr]
+            u_min = np.column_stack([np.full(N_ilqr, Q_min_abs), w_lo])  # [N, 2]
+            u_max = np.column_stack([np.full(N_ilqr, Q_max_abs), w_hi])  # [N, 2]
+        else:
+            u_min = np.array([Q_min_abs, w_min_abs])  # [2] constant
+            u_max = np.array([Q_max_abs, w_max_abs])  # [2] constant
+
         print(f"  G = {args.G:.2e},  G_f = {args.G_f:.2e},  R = diag{args.R_diag}")
-        print(f"  Q bounds: [{args.Q_min:.2e}, {args.Q_max:.2e}] m³/s")
-        print(f"  w bounds: [{args.w_min * 1e3:.1f}, {args.w_max * 1e3:.1f}] mm")
+        print(f"  Q bounds: [{Q_min_abs:.2e}, {Q_max_abs:.2e}] m³/s")
+        if _use_rel_bounds:
+            dp_mm = args.w_delta_plus  * 1e3 if args.w_delta_plus  is not None else float("inf")
+            dm_mm = args.w_delta_minus * 1e3 if args.w_delta_minus is not None else float("inf")
+            print(f"  w bounds: W_com[k] ± [{dp_mm:.2f}, {dm_mm:.2f}] mm  "
+                  f"(clipped to [{w_min_abs*1e3:.1f}, {w_max_abs*1e3:.1f}] mm abs)")
+        else:
+            print(f"  w bounds: [{w_min_abs * 1e3:.1f}, {w_max_abs * 1e3:.1f}] mm  (constant)")
         print(f"  max_iter = {args.max_iter},  tol = {args.tol}")
         print(f"  Starting iLQR solve  ({N_ilqr} steps, ~{10 * N_ilqr} MATLAB calls/iter)...")
 

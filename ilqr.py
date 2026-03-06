@@ -665,11 +665,11 @@ class ILQRSolver:
             for k in range(T):
                 delta_x = x - nom_vecs[k]
                 u_new_k = U_nom[k] + alpha * ks[k] + Ks[k] @ delta_x
-                # Clip to bounds
+                # Clip to bounds (supports both constant [2] and time-varying [T, 2])
                 if u_min is not None:
-                    u_new_k = np.maximum(u_new_k, u_min)
+                    u_new_k = np.maximum(u_new_k, u_min[k] if u_min.ndim > 1 else u_min)
                 if u_max is not None:
-                    u_new_k = np.minimum(u_new_k, u_max)
+                    u_new_k = np.minimum(u_new_k, u_max[k] if u_max.ndim > 1 else u_max)
                 U_new[k] = u_new_k
 
                 # Step dynamics to get next state for gain computation

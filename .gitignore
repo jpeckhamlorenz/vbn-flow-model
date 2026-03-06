@@ -23,3 +23,4 @@ traj_WALR_train-test/
 traj_WALR-test/
 traj_NALO-test/
 traj_WALO-test/
+sweep_results**/
