@@ -10,6 +10,7 @@ archive/model_data/
 slides/
 wandb/
 archive/an_data/
+sweep_results/
 .idea/*
 *.pyc
 *.pth

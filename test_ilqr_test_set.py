@@ -142,6 +142,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     p.add_argument("--no_show", action="store_true",
                    help="Skip plt.show() (non-interactive / batch runs)")
+    p.add_argument("--save_dir", default=None,
+                   help="Directory to save figures as PNG files (created if absent). "
+                        "Filenames: <parent_id>_{A,B}_G<G>_R<R>.png")
 
     return p.parse_args()
 
@@ -559,6 +562,13 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parent
 
+    # Output directory for figures (--save_dir)
+    out_dir: Path | None = None
+    if args.save_dir is not None:
+        out_dir = Path(args.save_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  Figures will be saved to: {out_dir.resolve()}")
+
     # ------------------------------------------------------------------
     # Identify parent trajectories
     # ------------------------------------------------------------------
@@ -758,6 +768,18 @@ def main() -> None:
         )
         fig_b.canvas.manager.set_window_title(f"Fig B — {parent_id}") \
             if hasattr(fig_b.canvas, "manager") and fig_b.canvas.manager else None
+
+        # Save figures to disk if --save_dir was given
+        if out_dir is not None:
+            tag = f"G{args.G:.0e}_R{args.R_diag[0]:.0e}"
+            path_a = out_dir / f"{parent_id}_A_{tag}.png"
+            path_b = out_dir / f"{parent_id}_B_{tag}.png"
+            fig_a.savefig(path_a, dpi=150, bbox_inches="tight")
+            fig_b.savefig(path_b, dpi=150, bbox_inches="tight")
+            print(f"  Saved: {path_a.name}")
+            print(f"  Saved: {path_b.name}")
+            plt.close(fig_a)
+            plt.close(fig_b)
 
     # ------------------------------------------------------------------
     # Cleanup and display
