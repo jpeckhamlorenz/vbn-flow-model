@@ -368,7 +368,7 @@ class DictToObject:
 
 def get_best_run(entity = 'jplorenz-university-of-michigan',
                  project = 'VBN-modeling',
-                 sweep_id = 'e8wa5l6y'):
+                 sweep_id = 'mnywg829'):
 
     api = wandb.Api()
     # best_run = api.sweep(entity + '/' + project + '/' + sweep_id).best_run()
@@ -396,7 +396,8 @@ def get_best_run(entity = 'jplorenz-university-of-michigan',
 
     run_losses_sorted = sorted(run_losses.items(), key=lambda item: item[1])
 
-    best_run_id = run_losses_sorted[0][0]
+    # best_run_id = run_losses_sorted[0][0] # todo: change back to this later
+    best_run_id = run_losses_sorted[1][0]
     best_run = api.run(entity + '/' + project + '/' + best_run_id)
 
     run_config = DictToObject(best_run.config)

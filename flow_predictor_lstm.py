@@ -1,4 +1,3 @@
-# flow_predictor_lstm.py
 # Deployment: analytical VBN + normalized windowed residual LSTM + stitching
 
 from __future__ import annotations
