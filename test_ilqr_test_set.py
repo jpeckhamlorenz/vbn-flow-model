@@ -763,6 +763,23 @@ def main() -> None:
             rmse_ilqr=rmse_ilqr,
         ))
 
+        # ---- Save controls to disk (for validate_ilqr_windowed.py / deploy) ----
+        if out_dir is not None:
+            tag = f"G{args.G:.0e}_R{args.R_diag[0]:.0e}"
+            ctrl_path = out_dir / f"{parent_id}_controls_{tag}.npz"
+            np.savez(
+                ctrl_path,
+                t                    = t_ilqr,            # [N_ilqr]  seconds
+                Q_cmd_opt            = U_opt[:, 0],        # [N_ilqr]  m³/s
+                w_cmd_opt            = U_opt[:, 1],        # [N_ilqr]  m
+                Q_cmd_naive          = U_naive[:, 0],      # [N_ilqr]  m³/s (= Q_com[:N_ilqr])
+                w_cmd_naive          = U_naive[:, 1],      # [N_ilqr]  m    (= W_com[:N_ilqr])
+                Q_com                = Q_com[:N_ilqr],     # [N_ilqr]  m³/s  iLQR tracking target
+                Q_out_stepmode_opt   = Q_out_iLQR,         # [N_ilqr]  m³/s
+                Q_out_stepmode_naive = Q_out_naive,        # [N_ilqr]  m³/s
+            )
+            print(f"  Saved controls: {ctrl_path.name}")
+
         # ---- Figures --------------------------------------------------------
         fig_a = _plot_flowrate_comparison(
             parent_id=parent_id,
