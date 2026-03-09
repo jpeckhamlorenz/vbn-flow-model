@@ -428,22 +428,36 @@ class ILQRSolver:
         U_init: np.ndarray,
         u_min: np.ndarray | None = None,
         u_max: np.ndarray | None = None,
+        use_windowed_cost: bool = False,
+        dt: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list[float]]:
         """
         Run iLQR to find optimal controls U* that minimise tracking error.
 
         Args:
-            state0:  initial HybridState (zero state or warm start)
-            q_ref:   reference flowrate trajectory [m³/s], shape (T,)
-            U_init:  initial control guess [T, 2]  (e.g. Q_cmd ≈ q_ref, w_cmd nominal)
-            u_min:   lower control bounds [2,]  (None = no bound)
-            u_max:   upper control bounds [2,]  (None = no bound)
+            state0:             initial HybridState (zero state or warm start)
+            q_ref:              reference flowrate trajectory [m³/s], shape (T,)
+            U_init:             initial control guess [T, 2]
+            u_min:              lower control bounds [2,] or [T, 2]  (None = no bound)
+            u_max:              upper control bounds [2,] or [T, 2]  (None = no bound)
+            use_windowed_cost:  if True, adjust the effective reference at each iteration
+                                by subtracting the windowed LSTM residual so that the
+                                Riccati backward pass optimises the windowed prediction
+                                (Q_vbn + Q_res_windowed) toward q_ref rather than the
+                                step-mode output.  Requires dt to be set.
+            dt:                 timestep [s]  (required when use_windowed_cost=True)
 
         Returns:
             U_opt:      optimal controls [T, 2]
-            Q_out_opt:  resulting output flowrate [m³/s], shape (T,)
+            Q_out_opt:  resulting output flowrate [m³/s], shape (T,).
+                        In windowed cost mode this is the windowed prediction
+                        (Q_vbn + Q_res_windowed); in standard mode it is the
+                        step-mode hybrid output.
             cost_hist:  list of total costs per iLQR iteration
         """
+        if use_windowed_cost and dt is None:
+            raise ValueError("dt must be provided when use_windowed_cost=True")
+
         T = len(q_ref)
         U = np.copy(U_init)
         lam = self.lam_init
@@ -451,11 +465,28 @@ class ILQRSolver:
 
         # Initial forward rollout
         states, Q_out = self.dyn.rollout(state0, U)
-        cost = self._total_cost(Q_out, q_ref, U)
+
+        if use_windowed_cost:
+            # Q_vbn[k] = ODE angular velocity at t_k × extrusion ratio
+            # states[k].theta_dot is the theta_dot used for Q_analytical during step k
+            Q_vbn = np.array([states[k].theta_dot * self.dyn._er for k in range(T)])
+            # Use U[:, 0] (current Q_cmd) so the LSTM sees the actual command input,
+            # not q_ref — this makes the windowed cost sensitive to Q_cmd chattering.
+            Q_res_win = self.dyn.lstm.run_windowed(U[:, 0], Q_vbn, U[:, 1], dt)
+            q_ref_eff = q_ref - Q_res_win          # adjusted ODE target
+            cost = self._total_cost(Q_vbn, q_ref_eff, U)   # = windowed cost
+            Q_out_bp = Q_vbn                        # backward pass drives ODE output
+            q_ref_bp = q_ref_eff
+        else:
+            cost = self._total_cost(Q_out, q_ref, U)
+            Q_out_bp = Q_out
+            q_ref_bp = q_ref
+
         cost_hist.append(cost)
 
         if self.verbose:
-            print(f"iLQR init: cost = {cost:.6e}")
+            mode_str = " [windowed cost]" if use_windowed_cost else ""
+            print(f"iLQR init{mode_str}: cost = {cost:.6e}")
 
         for it in range(self.max_iter):
             # ---- Linearize
@@ -465,8 +496,11 @@ class ILQRSolver:
             As, Bs, dq_dxs, dq_dus = self._linearize_trajectory(states, U, T)
 
             # ---- Backward pass (Riccati) with LM regularization
+            # In windowed mode: Q_out_bp = Q_vbn, q_ref_bp = q_ref_eff.
+            # This drives gains that minimise G*||Q_vbn - q_ref_eff||^2
+            # = G*||Q_pred_windowed - q_ref||^2.
             Ks, ks, success = self._backward_pass(
-                states, U, Q_out, q_ref, As, Bs, dq_dxs, dq_dus, lam
+                states, U, Q_out_bp, q_ref_bp, As, Bs, dq_dxs, dq_dus, lam
             )
 
             if not success:
@@ -478,9 +512,15 @@ class ILQRSolver:
                     print(f"  Backward pass failed; increasing lam to {lam:.2e}")
                 continue
 
-            # ---- Forward pass with line search
-            U_new, states_new, Q_out_new, cost_new, alpha = self._forward_pass(
-                state0, states, U, Q_out, Ks, ks, q_ref, u_min, u_max
+            # ---- Forward pass with Armijo line search
+            # In windowed mode the Armijo check uses the true windowed cost
+            # G*||Q_vbn_new + Q_res_win_new - q_ref||^2 + R*||U_new||^2,
+            # making it consistent with the outer cost and preventing oscillation.
+            U_new, states_new, Q_out_new, cost_proxy, alpha = self._forward_pass(
+                state0, states, U, Q_out_bp, Ks, ks, q_ref_bp, u_min, u_max,
+                use_windowed_cost=use_windowed_cost,
+                q_ref_true=q_ref if use_windowed_cost else None,
+                dt_win=dt if use_windowed_cost else None,
             )
 
             if alpha is None:
@@ -491,13 +531,30 @@ class ILQRSolver:
                 continue
 
             # ---- Accept step
-            rel_change = abs(cost_new - cost) / (abs(cost) + 1e-30)
-            cost = cost_new
             U = U_new
             states = states_new
-            Q_out = Q_out_new
-            cost_hist.append(cost)
+            Q_out = Q_out_new   # windowed prediction in windowed mode, step-mode otherwise
             lam = max(lam / self.lam_factor, 1e-12)
+
+            # ---- Update for next backward pass + record convergence cost
+            if use_windowed_cost:
+                # cost_proxy is already the true windowed cost (from _forward_pass).
+                # Update q_ref_eff for the NEXT backward pass using Q_vbn from accepted states.
+                # states[k].theta_dot * ER = Q_analytical at step k = Q_vbn[k].
+                Q_vbn = np.array([states[k].theta_dot * self.dyn._er for k in range(T)])
+                # Use accepted U[:, 0] so the LSTM sees the real Q_cmd (not q_ref).
+                Q_res_win = self.dyn.lstm.run_windowed(U[:, 0], Q_vbn, U[:, 1], dt)
+                q_ref_eff = q_ref - Q_res_win
+                cost_new = cost_proxy   # true windowed cost, guaranteed < previous by Armijo
+                Q_out_bp = Q_vbn
+                q_ref_bp = q_ref_eff
+            else:
+                cost_new = cost_proxy
+                Q_out_bp = Q_out  # refresh Armijo baseline to current accepted trajectory
+
+            rel_change = abs(cost_new - cost) / (abs(cost) + 1e-30)
+            cost = cost_new
+            cost_hist.append(cost)
 
             if self.verbose:
                 print(
@@ -513,7 +570,13 @@ class ILQRSolver:
             if self.verbose:
                 print("iLQR: reached max_iter without convergence.")
 
-        return U, Q_out, cost_hist
+        # Final output: windowed prediction if use_windowed_cost, else step-mode
+        if use_windowed_cost:
+            Q_out_final = Q_vbn + Q_res_win   # windowed prediction at final U
+        else:
+            Q_out_final = Q_out
+
+        return U, Q_out_final, cost_hist
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -637,18 +700,30 @@ class ILQRSolver:
         q_ref: np.ndarray,
         u_min: np.ndarray | None,
         u_max: np.ndarray | None,
+        use_windowed_cost: bool = False,
+        q_ref_true: np.ndarray | None = None,
+        dt_win: float | None = None,
     ) -> tuple[np.ndarray | None, list | None, np.ndarray | None, float | None, float | None]:
         """
         Forward pass with Armijo line search.
 
         Control update: u_k = u_nom_k + alpha * k_k + K_k @ (x_k - x_nom_k)
 
+        When use_windowed_cost=True the Armijo condition uses the true windowed
+        cost G*||Q_vbn_new + Q_res_windowed_new - q_ref_true||^2 + R*||U_new||^2,
+        which is consistent with the cost minimised in solve().  The nominal cost
+        Q_out_nom must be Q_vbn (ODE output) and q_ref must be q_ref_eff so that
+        cost_nom = G*||Q_vbn - q_ref_eff||^2 = G*||Q_pred_win - q_ref_true||^2.
+
         Returns (U_new, states_new, Q_out_new, cost_new, alpha) or
                 (None, None, None, None, None) if line search fails.
+        In windowed cost mode Q_out_new is the windowed prediction Q_vbn+Q_res_win.
         """
         T = len(U_nom)
         alpha = self.alpha_init
         nom_vecs = [s.to_vec() for s in states_nom]
+        # cost_nom = windowed cost at nominal (when use_windowed_cost=True,
+        # Q_out_nom=Q_vbn and q_ref=q_ref_eff, so this equals G*||Q_pred_win-q_ref||^2)
         cost_nom = self._total_cost(Q_out_nom, q_ref, U_nom)
 
         for _ in range(self.n_alpha):
@@ -679,10 +754,25 @@ class ILQRSolver:
                 x = next_state.to_vec()
                 state = next_state
 
-            cost_new = self._total_cost(Q_out_new, q_ref, U_new)
-
-            if cost_new < cost_nom:  # Armijo: any decrease accepted
-                return U_new, states_new, Q_out_new, cost_new, alpha
+            if use_windowed_cost:
+                # Consistent windowed Armijo: evaluate G*||Q_pred_win_new - q_ref_true||^2
+                # Extract Q_vbn from states (states_new[k].theta_dot * ER = Q_analytical at step k)
+                Q_vbn_ls = np.array(
+                    [states_new[k].theta_dot * self.dyn._er for k in range(T)]
+                )
+                # Use U_new[:, 0] (proposed Q_cmd) so Armijo sees the true windowed cost
+                # at the candidate controls, including any chattering in Q_cmd.
+                Q_res_ls = self.dyn.lstm.run_windowed(
+                    U_new[:, 0], Q_vbn_ls, U_new[:, 1], dt_win
+                )
+                Q_pred_win_ls = Q_vbn_ls + Q_res_ls
+                cost_new = self._total_cost(Q_pred_win_ls, q_ref_true, U_new)
+                if cost_new < cost_nom:
+                    return U_new, states_new, Q_pred_win_ls, cost_new, alpha
+            else:
+                cost_new = self._total_cost(Q_out_new, q_ref, U_new)
+                if cost_new < cost_nom:  # Armijo: any decrease accepted
+                    return U_new, states_new, Q_out_new, cost_new, alpha
 
             alpha *= self.alpha_decay
 

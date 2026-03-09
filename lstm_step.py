@@ -253,3 +253,82 @@ class LSTMStepWrapper:
 
         Q_res_t = (y_hat_norm * (self._tgt_sd + _NORM_EPS) + self._tgt_mu) / _FLOW_SCALE
         return Q_res_t, h_next, c_next
+
+    # ------------------------------------------------------------------
+
+    @torch.no_grad()
+    def run_windowed(
+        self,
+        Q_com: np.ndarray,
+        Q_vbn: np.ndarray,
+        W_com: np.ndarray,
+        dt: float,
+        window_len_s: float = 4.5,
+        window_step_s: float = 0.1,
+    ) -> np.ndarray:
+        """
+        Windowed batch LSTM inference matching the training paradigm.
+
+        Resets h, c to zero at the start of each window and averages overlapping
+        window predictions — identical to flow_predictor_lstm_windowed() and
+        the _run_windowed_lstm() function in test_ilqr_test_set.py.
+
+        Args:
+            Q_com:         commanded flowrate [m³/s], shape (N,)
+            Q_vbn:         ODE analytical output [m³/s], shape (N,)  (LSTM input feature 2)
+            W_com:         bead width commands [m], shape (N,)
+            dt:            timestep [s]
+            window_len_s:  window length [s]  (default 4.5 s = 45 steps at dt=0.1)
+            window_step_s: stride [s]          (default 0.1 s = 1 step  at dt=0.1)
+
+        Returns:
+            Q_res_windowed: windowed LSTM residual [m³/s], shape (N,).
+                            Add to Q_vbn to get the windowed prediction:
+                            Q_pred_windowed = Q_vbn + Q_res_windowed.
+        """
+        N = len(Q_com)
+        window_len  = max(1, int(round(window_len_s  / dt)))
+        window_step = max(1, int(round(window_step_s / dt)))
+
+        in_mu = self._in_mu.cpu().numpy()   # [3]  (command, bead, analytical)
+        in_sd = self._in_sd.cpu().numpy()   # [3]
+
+        # Build feature matrix [N, 3]: [command, bead, analytical]
+        # Order matches DataModule training convention.
+        feats_raw = np.stack([
+            Q_com * _FLOW_SCALE,
+            W_com * _BEAD_SCALE,
+            Q_vbn * _FLOW_SCALE,
+        ], axis=1).astype(np.float32)                                    # [N, 3]
+        feats_norm = (feats_raw - in_mu[None, :]) / (in_sd[None, :] + _NORM_EPS)  # [N, 3]
+
+        acc   = np.zeros(N, dtype=np.float64)
+        count = np.zeros(N, dtype=np.float64)
+
+        # Window-start selection: mirrors _make_windows() in flow_predictor_lstm.py.
+        # Only start where a full window fits (s + window_len <= N), then add one
+        # tail window at max(N - window_len, 0) to cover the end of the sequence.
+        # This matches the deployed pipeline exactly (unlike range(0, N, step) which
+        # also includes partial windows past N - window_len, causing a different
+        # averaging that the iLQR would otherwise over-optimise for).
+        starts = list(range(0, max(N - window_len + 1, 0), window_step))
+        tail_start = max(N - window_len, 0)
+        if not starts or starts[-1] != tail_start:
+            starts.append(tail_start)
+
+        for s in starts:
+            e = min(s + window_len, N)
+            x_win = torch.tensor(
+                feats_norm[s:e], dtype=torch.float32, device=self.device
+            ).unsqueeze(0)                                               # [1, win, 3]
+            h0, c0 = self.init_state()
+            out, _ = self._net.lstm(x_win, (h0, c0))                   # [1, win, hidden]
+            y_norm = self._net.fc(out).squeeze(0).squeeze(-1).cpu().numpy()   # [win]
+            res = (y_norm * (self._tgt_sd + _NORM_EPS) + self._tgt_mu) / _FLOW_SCALE
+            acc[s:e]   += res
+            count[s:e] += 1.0
+
+        valid = count > 0
+        Q_res = np.zeros(N, dtype=np.float64)
+        Q_res[valid] = acc[valid] / count[valid]
+        return Q_res

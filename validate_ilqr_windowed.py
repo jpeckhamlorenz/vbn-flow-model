@@ -294,4 +294,132 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # main()
+
+    args = _parse_args()
+
+    ctrl_path = Path(args.controls_npz)
+    if not ctrl_path.exists():
+        sys.exit(f"Controls file not found: {ctrl_path}")
+
+    # ── 1. Load controls .npz ────────────────────────────────────────────────
+    print(f"\n  Loading controls: {ctrl_path.name}")
+    data = np.load(ctrl_path)
+
+    t = data["t"]  # [N]  seconds
+    Q_cmd_opt = data["Q_cmd_opt"]  # [N]  m³/s
+    w_cmd_opt = data["w_cmd_opt"]  # [N]  m
+    Q_cmd_naive = data["Q_cmd_naive"]  # [N]  m³/s
+    w_cmd_naive = data["w_cmd_naive"]  # [N]  m
+    Q_com = data["Q_com"]  # [N]  m³/s
+    Q_out_stepmode_opt = data["Q_out_stepmode_opt"]  # [N]  m³/s
+    Q_out_stepmode_naive = data["Q_out_stepmode_naive"]  # [N]  m³/s
+
+    # Infer parent_id from filename: <parent_id>_controls_G*_R*.npz
+    parent_id = ctrl_path.stem.split("_controls_")[0]
+    print(f"  Parent: {parent_id}   N={len(t)} steps   "
+          f"duration={t[-1] - t[0]:.2f} s   dt={t[1] - t[0]:.4f} s")
+
+    # ── 2. Resolve checkpoint + norm_stats ───────────────────────────────────
+    print("\n  Resolving checkpoint …")
+    ckpt_path, run_config = _resolve_checkpoint(args)
+    print(f"  num_layers  = {run_config.num_layers}")
+    print(f"  hidden_size = {run_config.hidden_size}")
+
+    print("\n  Loading DataModule for norm_stats …")
+    from models.traj_WALR import DataModule
+
+    dm = DataModule(run_config, data_folderpath=Path(args.data_folder))
+    dm.setup("fit")
+    norm_stats = dm.norm_stats
+
+    # ── 3. Windowed pipeline — naive controls ────────────────────────────────
+    print("\n  Running windowed pipeline on NAIVE controls (Q_cmd = Q_com) …")
+    print("  (This will start a MATLAB engine — expected delay ~30–60 s)")
+    from flow_predictor_lstm import flow_predictor_lstm_windowed
+
+    Q_pred_naive, Q_vbn_naive, _ = flow_predictor_lstm_windowed(
+        time_np=t,
+        command_np=Q_cmd_naive,  # m³/s
+        bead_np=w_cmd_naive,  # m  (bead_units="m" → ×1000 internally for LSTM)
+        model_type="WALR",
+        ckpt_path=ckpt_path,
+        run_config=run_config,
+        norm_stats=norm_stats,
+        bead_units="m",
+        device_type=args.device,
+    )
+    print("  Naive windowed pipeline: done.")
+
+    # ── 4. Windowed pipeline — optimized controls ────────────────────────────
+    print("\n  Running windowed pipeline on iLQR-OPTIMIZED controls …")
+    print("  (Starting second MATLAB engine …)")
+    Q_pred_opt, Q_vbn_opt, _ = flow_predictor_lstm_windowed(
+        time_np=t,
+        command_np=Q_cmd_opt,  # m³/s
+        bead_np=w_cmd_opt,  # m
+        model_type="WALR",
+        ckpt_path=ckpt_path,
+        run_config=run_config,
+        norm_stats=norm_stats,
+        bead_units="m",
+        device_type=args.device,
+    )
+    print("  Optimized windowed pipeline: done.")
+
+    # ── 5. RMSE table ────────────────────────────────────────────────────────
+    rmse_naive_win = np.sqrt(np.mean((Q_pred_naive - Q_com) ** 2)) * _SCALE
+    rmse_opt_win = np.sqrt(np.mean((Q_pred_opt - Q_com) ** 2)) * _SCALE
+    rmse_opt_step = np.sqrt(np.mean((Q_out_stepmode_opt - Q_com) ** 2)) * _SCALE
+    rmse_naive_step = np.sqrt(np.mean((Q_out_stepmode_naive - Q_com) ** 2)) * _SCALE
+
+    print(f"\n{'=' * 62}")
+    print(f"  Windowed pipeline validation — {parent_id}")
+    print(f"{'=' * 62}")
+    print(f"  {'Method':40}  {'RMSE (mL/min)':>14}")
+    print(f"  {'-' * 40}  {'-' * 14}")
+    print(f"  {'Naive step-mode  (hybrid model, Q_cmd=Q_com)':40}  {rmse_naive_step:>14.4f}")
+    print(f"  {'Naive windowed   (original pipeline, Q_cmd=Q_com)':40}  {rmse_naive_win:>14.4f}")
+    print(f"  {'iLQR  step-mode  (hybrid model, Q_cmd_opt)':40}  {rmse_opt_step:>14.4f}")
+    print(f"  {'iLQR  windowed   (original pipeline, Q_cmd_opt)':40}  {rmse_opt_win:>14.4f}")
+    print(f"{'=' * 62}")
+
+    if rmse_opt_win < rmse_naive_win:
+        impr = (rmse_naive_win - rmse_opt_win) / rmse_naive_win * 100
+        print(f"  ✓ Windowed pipeline confirms iLQR improvement: "
+              f"{impr:.1f}% RMSE reduction")
+    else:
+        print(f"  ⚠ Windowed pipeline does NOT confirm iLQR improvement — "
+              f"step-mode model may be overfitting its own simplification.")
+
+    if rmse_opt_step < rmse_opt_win:
+        print(f"  Note: step-mode RMSE ({rmse_opt_step:.4f}) < windowed RMSE ({rmse_opt_win:.4f}) "
+              f"— iLQR over-optimized for its internal model.")
+
+    # ── 6. Figure ─────────────────────────────────────────────────────────────
+    fig = _plot_validation(
+        t=t,
+        Q_com=Q_com,
+        Q_pred_naive=Q_pred_naive,
+        Q_pred_opt=Q_pred_opt,
+        Q_vbn_naive=Q_vbn_naive,
+        Q_vbn_opt=Q_vbn_opt,
+        Q_out_stepmode_opt=Q_out_stepmode_opt,
+        rmse_naive_win=rmse_naive_win,
+        rmse_opt_win=rmse_opt_win,
+        rmse_opt_step=rmse_opt_step,
+        parent_id=parent_id,
+    )
+
+    if args.save_dir is not None:
+        out_dir = Path(args.save_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stem = ctrl_path.stem.replace("_controls_", "_windowed_val_")
+        png_path = out_dir / f"{stem}.png"
+        fig.savefig(png_path, dpi=150, bbox_inches="tight")
+        print(f"  Saved figure: {png_path}")
+
+    if not args.no_show:
+        plt.show()
+
+    print("\n  Done.")

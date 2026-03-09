@@ -16,8 +16,8 @@ test = twostep(
         t_flowdown = 17,  # time of step-down command [s]
         beadwidth_down = 0.0008,  # step-down bead width [m]
         beadwidth_up = 0.0029, # step-up bead width [m]
-        t_beaddown = 50,  # time of step-up command [s]
-        t_beadup = 170,  # time of step-down command [s]
+        t_beaddown = 10,  # time of step-up command [s]
+        t_beadup = 19,  # time of step-down command [s]
 )
 
 

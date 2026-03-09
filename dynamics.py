@@ -131,16 +131,23 @@ class HybridDynamics:
         bridge: MatlabBridge,
         lstm: LSTMStepWrapper,
         dt: float,
+        use_lstm: bool = True,
     ) -> None:
         """
         Args:
-            bridge: initialized MatlabBridge (MATLAB engine already started)
-            lstm:   initialized LSTMStepWrapper
-            dt:     fixed timestep [s]
+            bridge:   initialized MatlabBridge (MATLAB engine already started)
+            lstm:     initialized LSTMStepWrapper
+            dt:       fixed timestep [s]
+            use_lstm: if False, skip the LSTM residual correction — outputs only the
+                      analytical ODE flow (Q_vbn = theta_dot * ER).  The LSTM is still
+                      required for initialisation but is not called during step/rollout.
+                      Useful for analytical-only iLQR where the full windowed LSTM
+                      prediction is applied separately after optimisation.
         """
         self.bridge = bridge
         self.lstm = lstm
         self.dt = dt
+        self.use_lstm = use_lstm
         self._er = bridge.extrusion_ratio
 
     # ------------------------------------------------------------------
@@ -194,14 +201,17 @@ class HybridDynamics:
         Q_analytical_k = state.theta_dot * self._er
 
         # 2. LSTM step (updates h, c; produces residual correction)
-        Q_res_k, h_next, c_next = self.lstm.step(
-            Q_cmd_k, w_cmd_k, Q_analytical_k, state.h, state.c
-        )
+        if self.use_lstm:
+            Q_res_k, h_next, c_next = self.lstm.step(
+                Q_cmd_k, w_cmd_k, Q_analytical_k, state.h, state.c
+            )
+            q_out_k = Q_analytical_k + Q_res_k
+        else:
+            # Analytical-only mode: skip LSTM, pass h/c through unchanged
+            h_next, c_next = state.h, state.c
+            q_out_k = Q_analytical_k
 
-        # 3. Combined output
-        q_out_k = Q_analytical_k + Q_res_k
-
-        # 4. ODE step: advance (theta, theta_dot, motor_pos) by one dt
+        # 3. ODE step: advance (theta, theta_dot, motor_pos) by one dt
         theta_next, theta_dot_next, motor_pos_next = self.bridge.step_ode(
             t_k=state.t,
             dt=self.dt,
@@ -274,14 +284,20 @@ class HybridDynamics:
 
         for k in range(T):
             Q_analytical_k = float(theta_dot_traj[k]) * self._er
-            Q_res_k, h_next, c_next = self.lstm.step(
-                float(Q_cmd_traj[k]),
-                float(w_cmd_traj[k]),
-                Q_analytical_k,
-                h,
-                c,
-            )
-            Q_out[k] = Q_analytical_k + Q_res_k
+
+            if self.use_lstm:
+                Q_res_k, h_next, c_next = self.lstm.step(
+                    float(Q_cmd_traj[k]),
+                    float(w_cmd_traj[k]),
+                    Q_analytical_k,
+                    h,
+                    c,
+                )
+                Q_out[k] = Q_analytical_k + Q_res_k
+            else:
+                # Analytical-only mode: output is ODE prediction only
+                h_next, c_next = h, c
+                Q_out[k] = Q_analytical_k
 
             next_state = HybridState(
                 theta=float(theta_traj[k + 1]),

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -132,20 +133,47 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--tol",      type=float, default=1e-4)
     p.add_argument("--eps_ode",  type=float, default=1e-5)
     p.add_argument("--eps_ctrl", type=float, default=1e-7)
+    p.add_argument("--use_windowed_cost", action="store_true",
+                   help="Use windowed LSTM cost for iLQR (adjusts q_ref by windowed "
+                        "residual each iteration so the optimizer targets the deployed "
+                        "windowed pipeline). Requires no extra MATLAB calls.")
+    p.add_argument("--analytical_only", action="store_true",
+                   help="Run iLQR on the analytical ODE model only (no LSTM). "
+                        "Finds Q_cmd_opt such that Q_vbn(Q_cmd_opt) ≈ Q_com. "
+                        "The full windowed prediction is still run separately for "
+                        "display. Much faster (~30× fewer PyTorch calls/iter) and "
+                        "better-conditioned at long horizons.")
 
     # Control bounds
     p.add_argument("--Q_min", type=float, default=0.0)
     p.add_argument("--Q_max", type=float, default=1e-6)
     p.add_argument("--w_min", type=float, default=0.0005)
     p.add_argument("--w_max", type=float, default=0.005)
-    p.add_argument("--w_delta_plus",  type=float, default=None,
+    p.add_argument("--w_delta_plus",  type=float, default=4e-4,
                    help="Max bead width ABOVE W_com[k] at each timestep [m]. "
                         "E.g. 2e-4 (= 0.2 mm). Intersected with --w_max. "
                         "None = no relative upper bound (only --w_max applies).")
-    p.add_argument("--w_delta_minus", type=float, default=None,
+    p.add_argument("--w_delta_minus", type=float, default=9e-4,
                    help="Max bead width BELOW W_com[k] at each timestep [m]. "
                         "E.g. 4e-4 (= 0.4 mm). Intersected with --w_min. "
                         "None = no relative lower bound (only --w_min applies).")
+    p.add_argument("--Q_delta_plus",  type=float, default=None,
+                   help="Max flow command ABOVE Q_com[k] at each timestep [m³/s]. "
+                        "E.g. 5e-9 (= 0.3 mL/min). Intersected with --Q_max. "
+                        "Prevents chattering: iLQR cannot push Q_cmd far above Q_com. "
+                        "None = no relative upper bound (only --Q_max applies).")
+    p.add_argument("--Q_delta_minus", type=float, default=None,
+                   help="Max flow command BELOW Q_com[k] at each timestep [m³/s]. "
+                        "E.g. 5e-9 (= 0.3 mL/min). Intersected with --Q_min. "
+                        "None = no relative lower bound (only --Q_min applies).")
+    p.add_argument("--segment_len", type=int, default=None,
+                   help="Split the iLQR horizon into sequential segments of this many steps. "
+                        "ODE state (theta, theta_dot, motor_pos) threads between segments; "
+                        "LSTM h,c resets to 0 at each segment start — matching the deployed "
+                        "windowed pipeline which also resets per 4.5s window. "
+                        "At dt=0.01s: --segment_len 450 = 4.5s segments, exactly one LSTM "
+                        "training window, so step-mode ≡ windowed pipeline per segment. "
+                        "Default: None = one segment (full N_ilqr horizon, current behaviour).")
 
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     p.add_argument("--no_show", action="store_true",
@@ -627,7 +655,8 @@ def main() -> None:
     R_mat = np.diag(args.R_diag)
     Q_min_abs, Q_max_abs = args.Q_min, args.Q_max
     w_min_abs, w_max_abs = args.w_min, args.w_max
-    _use_rel_bounds = args.w_delta_plus is not None or args.w_delta_minus is not None
+    _use_rel_bounds = (args.w_delta_plus  is not None or args.w_delta_minus is not None or
+                       args.Q_delta_plus  is not None or args.Q_delta_minus is not None)
 
     # Accumulate per-trajectory metrics for final summary table
     results: list[dict] = []
@@ -667,7 +696,8 @@ def main() -> None:
         print(f"  Windowed LSTM RMSE vs Q_tru (full): {rmse_win_full:.4f} mL/min")
 
         # ---- HybridDynamics rollout (naive, iLQR horizon) -------------------
-        dyn = HybridDynamics(bridge=bridge, lstm=lstm, dt=dt)
+        dyn = HybridDynamics(bridge=bridge, lstm=lstm, dt=dt,
+                             use_lstm=not args.analytical_only)
         state0 = dyn.make_initial_state(t0=float(t_full[0]))
 
         U_naive = np.stack([Q_com[:N_ilqr], W_com[:N_ilqr]], axis=1)  # [N_ilqr, 2]
@@ -697,21 +727,33 @@ def main() -> None:
         _sep(f"iLQR — {parent_id}")
         q_ref = Q_com[:N_ilqr].copy()
 
-        # Build control bounds — time-varying if relative width deltas requested
+        # Build control bounds — time-varying if any relative deltas requested
         if _use_rel_bounds:
-            dp = args.w_delta_plus  if args.w_delta_plus  is not None else np.inf
-            dm = args.w_delta_minus if args.w_delta_minus is not None else np.inf
-            w_lo = np.maximum(w_min_abs, W_com[:N_ilqr] - dm)  # [N_ilqr]
-            w_hi = np.minimum(w_max_abs, W_com[:N_ilqr] + dp)  # [N_ilqr]
-            u_min = np.column_stack([np.full(N_ilqr, Q_min_abs), w_lo])  # [N, 2]
-            u_max = np.column_stack([np.full(N_ilqr, Q_max_abs), w_hi])  # [N, 2]
+            # Width bounds
+            dp_w = args.w_delta_plus  if args.w_delta_plus  is not None else np.inf
+            dm_w = args.w_delta_minus if args.w_delta_minus is not None else np.inf
+            w_lo = np.maximum(w_min_abs, W_com[:N_ilqr] - dm_w)  # [N_ilqr]
+            w_hi = np.minimum(w_max_abs, W_com[:N_ilqr] + dp_w)  # [N_ilqr]
+            # Flow bounds — relative to Q_com[k] to prevent chattering
+            dp_q = args.Q_delta_plus  if args.Q_delta_plus  is not None else np.inf
+            dm_q = args.Q_delta_minus if args.Q_delta_minus is not None else np.inf
+            q_lo = np.maximum(Q_min_abs, Q_com[:N_ilqr] - dm_q)  # [N_ilqr]
+            q_hi = np.minimum(Q_max_abs, Q_com[:N_ilqr] + dp_q)  # [N_ilqr]
+            u_min = np.column_stack([q_lo, w_lo])  # [N, 2]
+            u_max = np.column_stack([q_hi, w_hi])  # [N, 2]
         else:
             u_min = np.array([Q_min_abs, w_min_abs])  # [2] constant
             u_max = np.array([Q_max_abs, w_max_abs])  # [2] constant
 
         print(f"  G = {args.G:.2e},  G_f = {args.G_f:.2e},  R = diag{args.R_diag}")
-        print(f"  Q bounds: [{Q_min_abs:.2e}, {Q_max_abs:.2e}] m³/s")
-        if _use_rel_bounds:
+        if args.Q_delta_plus is not None or args.Q_delta_minus is not None:
+            dp_q_ml = args.Q_delta_plus  * 6e7 if args.Q_delta_plus  is not None else float("inf")
+            dm_q_ml = args.Q_delta_minus * 6e7 if args.Q_delta_minus is not None else float("inf")
+            print(f"  Q bounds: Q_com[k] +{dp_q_ml:.3f}/-{dm_q_ml:.3f} mL/min  "
+                  f"(clipped to [{Q_min_abs:.2e}, {Q_max_abs:.2e}] m³/s abs)")
+        else:
+            print(f"  Q bounds: [{Q_min_abs:.2e}, {Q_max_abs:.2e}] m³/s  (constant)")
+        if _use_rel_bounds and (args.w_delta_plus is not None or args.w_delta_minus is not None):
             dp_mm = args.w_delta_plus  * 1e3 if args.w_delta_plus  is not None else float("inf")
             dm_mm = args.w_delta_minus * 1e3 if args.w_delta_minus is not None else float("inf")
             print(f"  w bounds: W_com[k] ± [{dp_mm:.2f}, {dm_mm:.2f}] mm  "
@@ -733,13 +775,63 @@ def main() -> None:
             eps_ctrl=args.eps_ctrl,
             verbose=True,
         )
-        U_opt, Q_out_iLQR, cost_hist = solver.solve(
-            state0=state0,
-            q_ref=q_ref,
-            U_init=U_naive.copy(),
-            u_min=u_min,
-            u_max=u_max,
-        )
+        if args.use_windowed_cost:
+            print("  Mode: windowed cost iLQR (residual-adjusted reference)")
+        if args.analytical_only:
+            print("  Mode: analytical-only iLQR (ODE only — no LSTM in inner loop)")
+
+        # ---- Segment loop (default: one segment = existing single-solve behaviour) ----
+        from dynamics import HybridState   # alongside existing HybridDynamics import
+        seg_len = args.segment_len or N_ilqr
+        n_segs  = math.ceil(N_ilqr / seg_len)
+        if n_segs > 1:
+            print(f"  Segmented iLQR: {n_segs} × {seg_len}-step segments  "
+                  f"({seg_len * dt:.2f} s each, LSTM h,c reset per segment)")
+
+        U_opt      = np.copy(U_naive)      # [N_ilqr, 2]  — filled in below
+        Q_out_iLQR = np.zeros(N_ilqr)     # [N_ilqr]
+        cost_hist  = []
+        state_curr = state0
+
+        for s_idx in range(n_segs):
+            s0 = s_idx * seg_len
+            s1 = min(s0 + seg_len, N_ilqr)
+            if n_segs > 1:
+                print(f"\n  --- Segment {s_idx + 1}/{n_segs}: "
+                      f"steps [{s0}:{s1}]  ({s0*dt:.2f}–{s1*dt:.2f} s) ---")
+
+            # Slice bounds: support both constant [2] and time-varying [N, 2]
+            um  = (u_min[s0:s1] if isinstance(u_min, np.ndarray) and u_min.ndim > 1
+                   else u_min)
+            umx = (u_max[s0:s1] if isinstance(u_max, np.ndarray) and u_max.ndim > 1
+                   else u_max)
+
+            U_seg, Q_seg, ch = solver.solve(
+                state0=state_curr,
+                q_ref=q_ref[s0:s1],
+                U_init=U_naive[s0:s1].copy(),
+                u_min=um, u_max=umx,
+                use_windowed_cost=args.use_windowed_cost,
+                dt=dt if args.use_windowed_cost else None,
+            )
+
+            U_opt[s0:s1]      = U_seg
+            Q_out_iLQR[s0:s1] = Q_seg
+            cost_hist.extend(ch)
+
+            # Thread ODE state to next segment; reset LSTM h,c=0
+            # (matches deployed windowed pipeline: each window starts from h,c=0)
+            if s_idx < n_segs - 1:
+                states_seg, _ = dyn.rollout(state_curr, U_seg)
+                seg_final = states_seg[-1]
+                state_curr = HybridState(
+                    theta     = seg_final.theta,
+                    theta_dot = seg_final.theta_dot,
+                    motor_pos = seg_final.motor_pos,
+                    h = torch.zeros_like(seg_final.h),
+                    c = torch.zeros_like(seg_final.c),
+                    t = seg_final.t,
+                )
 
         rmse_ilqr = np.sqrt(np.mean((Q_out_iLQR - q_ref) ** 2)) * _SCALE
 
