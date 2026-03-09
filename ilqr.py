@@ -430,6 +430,7 @@ class ILQRSolver:
         u_max: np.ndarray | None = None,
         use_windowed_cost: bool = False,
         dt: float | None = None,
+        w_rate_max: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list[float]]:
         """
         Run iLQR to find optimal controls U* that minimise tracking error.
@@ -446,6 +447,8 @@ class ILQRSolver:
                                 (Q_vbn + Q_res_windowed) toward q_ref rather than the
                                 step-mode output.  Requires dt to be set.
             dt:                 timestep [s]  (required when use_windowed_cost=True)
+            w_rate_max:         max bead width change per step [m/step]  (None = no limit).
+                                Enforced in _forward_pass() as |w[k]-w[k-1]| <= w_rate_max.
 
         Returns:
             U_opt:      optimal controls [T, 2]
@@ -521,6 +524,7 @@ class ILQRSolver:
                 use_windowed_cost=use_windowed_cost,
                 q_ref_true=q_ref if use_windowed_cost else None,
                 dt_win=dt if use_windowed_cost else None,
+                w_rate_max=w_rate_max,
             )
 
             if alpha is None:
@@ -703,6 +707,7 @@ class ILQRSolver:
         use_windowed_cost: bool = False,
         q_ref_true: np.ndarray | None = None,
         dt_win: float | None = None,
+        w_rate_max: float | None = None,
     ) -> tuple[np.ndarray | None, list | None, np.ndarray | None, float | None, float | None]:
         """
         Forward pass with Armijo line search.
@@ -745,6 +750,10 @@ class ILQRSolver:
                     u_new_k = np.maximum(u_new_k, u_min[k] if u_min.ndim > 1 else u_min)
                 if u_max is not None:
                     u_new_k = np.minimum(u_new_k, u_max[k] if u_max.ndim > 1 else u_max)
+                # Rate-limit bead width: |w[k] - w[k-1]| <= w_rate_max (m/step)
+                if w_rate_max is not None:
+                    w_prev = U_new[k - 1, 1] if k > 0 else U_nom[0, 1]
+                    u_new_k[1] = np.clip(u_new_k[1], w_prev - w_rate_max, w_prev + w_rate_max)
                 U_new[k] = u_new_k
 
                 # Step dynamics to get next state for gain computation

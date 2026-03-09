@@ -174,6 +174,12 @@ def _parse_args() -> argparse.Namespace:
                         "At dt=0.01s: --segment_len 450 = 4.5s segments, exactly one LSTM "
                         "training window, so step-mode ≡ windowed pipeline per segment. "
                         "Default: None = one segment (full N_ilqr horizon, current behaviour).")
+    p.add_argument("--w_rate_max", type=float, default=None,
+                   help="Max bead width change rate [mm/s]. E.g. 1.0 limits the nozzle to "
+                        "1 mm/s. Prevents bang-bang chattering of w_cmd by enforcing "
+                        "|w[k]-w[k-1]| <= w_rate_max * dt per step. "
+                        "Converted internally to m/step = w_rate_max * 1e-3 * dt. "
+                        "Default: None = no rate limit (only absolute/relative bounds apply).")
 
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     p.add_argument("--no_show", action="store_true",
@@ -813,6 +819,8 @@ def main() -> None:
                 u_min=um, u_max=umx,
                 use_windowed_cost=args.use_windowed_cost,
                 dt=dt if args.use_windowed_cost else None,
+                w_rate_max=(args.w_rate_max * 1e-3 * dt if args.w_rate_max is not None
+                            else None),
             )
 
             U_opt[s0:s1]      = U_seg
