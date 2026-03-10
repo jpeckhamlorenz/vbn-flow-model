@@ -127,6 +127,14 @@ def _parse_args() -> argparse.Namespace:
                    help="Terminal cost weight (default: same as --G)")
     p.add_argument("--R_diag", nargs=2, type=float, default=[1e-3, 1e-3],
                    metavar=("R_Q", "R_w"))
+    p.add_argument("--S_diag", nargs=2, type=float, default=None,
+                   metavar=("S_Q", "S_w"),
+                   help="Rate penalty diagonal [S_Q, S_w]. Penalises control rate of change: "
+                        "Σ (u[k]-u[k-1])^T diag(S) (u[k]-u[k-1]). "
+                        "Smooths controls without breaking iLQR convergence (unlike hard "
+                        "--w_rate_max / --q_rate_max which cause line search failure). "
+                        "Typical values: S_Q ~ 1e14-1e16, S_w ~ 1e6-1e9 "
+                        "(scale relative to G for desired smoothness). Default: None.")
 
     # iLQR solver
     p.add_argument("--max_iter", type=int, default=10)
@@ -145,15 +153,15 @@ def _parse_args() -> argparse.Namespace:
                         "better-conditioned at long horizons.")
 
     # Control bounds
-    p.add_argument("--Q_min", type=float, default=0.0)
+    p.add_argument("--Q_min", type=float, default=-1e-7)
     p.add_argument("--Q_max", type=float, default=1e-6)
-    p.add_argument("--w_min", type=float, default=0.0005)
-    p.add_argument("--w_max", type=float, default=0.005)
-    p.add_argument("--w_delta_plus",  type=float, default=4e-4,
+    p.add_argument("--w_min", type=float, default=0.0007)
+    p.add_argument("--w_max", type=float, default=0.0029)
+    p.add_argument("--w_delta_plus",  type=float, default=0.0003,
                    help="Max bead width ABOVE W_com[k] at each timestep [m]. "
                         "E.g. 2e-4 (= 0.2 mm). Intersected with --w_max. "
                         "None = no relative upper bound (only --w_max applies).")
-    p.add_argument("--w_delta_minus", type=float, default=9e-4,
+    p.add_argument("--w_delta_minus", type=float, default=0.0021,
                    help="Max bead width BELOW W_com[k] at each timestep [m]. "
                         "E.g. 4e-4 (= 0.4 mm). Intersected with --w_min. "
                         "None = no relative lower bound (only --w_min applies).")
@@ -180,6 +188,12 @@ def _parse_args() -> argparse.Namespace:
                         "|w[k]-w[k-1]| <= w_rate_max * dt per step. "
                         "Converted internally to m/step = w_rate_max * 1e-3 * dt. "
                         "Default: None = no rate limit (only absolute/relative bounds apply).")
+    p.add_argument("--q_rate_max", type=float, default=None,
+                   help="Max flow rate change [mL/min/s]. E.g. 10.0 limits flow acceleration "
+                        "to 10 mL/min per second. Prevents Q_cmd chattering by enforcing "
+                        "|Q[k]-Q[k-1]| <= q_rate_max * dt per step. "
+                        "Converted internally to m³/s/step = q_rate_max * (1e-6/60) * dt. "
+                        "Default: None = no rate limit.")
 
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
     p.add_argument("--no_show", action="store_true",
@@ -752,6 +766,11 @@ def main() -> None:
             u_max = np.array([Q_max_abs, w_max_abs])  # [2] constant
 
         print(f"  G = {args.G:.2e},  G_f = {args.G_f:.2e},  R = diag{args.R_diag}")
+        if args.S_diag is not None:
+            print(f"  S = diag{args.S_diag}  (soft rate penalty)")
+        if args.S_diag is not None and (args.w_rate_max is not None or args.q_rate_max is not None):
+            print("  NOTE: Soft penalty (--S_diag) + hard rate limits both active. "
+                  "Consider using only --S_diag for reliable convergence.")
         if args.Q_delta_plus is not None or args.Q_delta_minus is not None:
             dp_q_ml = args.Q_delta_plus  * 6e7 if args.Q_delta_plus  is not None else float("inf")
             dm_q_ml = args.Q_delta_minus * 6e7 if args.Q_delta_minus is not None else float("inf")
@@ -770,11 +789,13 @@ def main() -> None:
         print(f"  Starting iLQR solve  ({N_ilqr} steps, ~{10 * N_ilqr} MATLAB calls/iter)...")
 
         from ilqr import ILQRSolver
+        S_mat = np.diag(args.S_diag) if args.S_diag is not None else None
         solver = ILQRSolver(
             dynamics=dyn,
             G=args.G,
             R=R_mat,
             G_f=args.G_f,
+            S=S_mat,
             max_iter=args.max_iter,
             tol=args.tol,
             eps_ode=args.eps_ode,
@@ -820,6 +841,8 @@ def main() -> None:
                 use_windowed_cost=args.use_windowed_cost,
                 dt=dt if args.use_windowed_cost else None,
                 w_rate_max=(args.w_rate_max * 1e-3 * dt if args.w_rate_max is not None
+                            else None),
+                q_rate_max=(args.q_rate_max * (1e-6 / 60) * dt if args.q_rate_max is not None
                             else None),
             )
 

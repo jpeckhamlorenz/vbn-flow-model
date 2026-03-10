@@ -127,6 +127,64 @@ def stage_derivatives(
     return {"l_x": l_x, "l_u": l_u, "l_xx": l_xx, "l_uu": l_uu, "l_xu": l_xu}
 
 
+# ------------------------------------------------------------------
+# Rate penalty for control smoothness
+# ------------------------------------------------------------------
+
+def rate_cost(
+    u_k: np.ndarray,
+    u_prev: np.ndarray,
+    S: np.ndarray,
+) -> float:
+    """
+    Quadratic rate penalty on control changes.
+
+    Args:
+        u_k:    control at step k [2,]
+        u_prev: control at step k-1 [2,]
+        S:      rate penalty matrix [2, 2] (typically diagonal)
+
+    Returns:
+        (u_k - u_prev)^T @ S @ (u_k - u_prev)
+    """
+    du = u_k - u_prev
+    return float(du @ S @ du)
+
+
+def rate_derivatives(
+    u_k: np.ndarray,
+    u_prev: np.ndarray,
+    S: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """
+    Derivatives of the rate penalty w.r.t. u_k (u_prev treated as constant).
+
+    The rate cost is: l_rate = (u_k - u_prev)^T @ S @ (u_k - u_prev)
+
+    Derivatives (exact — the cost is purely quadratic in u_k):
+        dl/du_k   = 2 * S @ (u_k - u_prev)       [m,]
+        d²l/du_k² = 2 * S                         [m, m]
+
+    No state dependence: dl/dx = 0, d²l/dx² = 0, d²l/dxdu = 0.
+
+    Args:
+        u_k:    control at step k [2,]
+        u_prev: control at step k-1 [2,]
+        S:      rate penalty matrix [2, 2]
+
+    Returns:
+        dict with:
+            l_u_rate:  [m,]   dl_rate/du_k
+            l_uu_rate: [m, m] d²l_rate/du_k²
+    """
+    du = u_k - u_prev
+    return {"l_u_rate": 2.0 * S @ du, "l_uu_rate": 2.0 * S}
+
+
+# ------------------------------------------------------------------
+# Terminal cost derivatives
+# ------------------------------------------------------------------
+
 def terminal_derivatives(
     q_out_N: float,
     q_ref_N: float,

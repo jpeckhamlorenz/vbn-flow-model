@@ -37,7 +37,8 @@ import torch
 import torch.func
 
 from dynamics import HybridDynamics, HybridState
-from cost import stage_derivatives, terminal_derivatives, stage_cost, terminal_cost
+from cost import (stage_derivatives, terminal_derivatives, stage_cost, terminal_cost,
+                   rate_cost, rate_derivatives)
 
 
 # ======================================================================
@@ -369,6 +370,7 @@ class ILQRSolver:
         G: float,
         R: np.ndarray,
         G_f: float,
+        S: np.ndarray | None = None,
         max_iter: int = 50,
         tol: float = 1e-4,
         lam_init: float = 1e-4,
@@ -387,6 +389,9 @@ class ILQRSolver:
             G:           tracking cost weight (scalar)
             R:           control cost matrix [2, 2]
             G_f:         terminal tracking weight
+            S:           rate penalty matrix [2, 2] or None. Penalises
+                         (u_k - u_{k-1})^T @ S @ (u_k - u_{k-1}) at each step.
+                         Smooths controls without breaking iLQR convergence.
             max_iter:    maximum iLQR iterations
             tol:         relative cost decrease for convergence
             lam_init:    initial Levenberg-Marquardt regularisation on V_xx
@@ -403,6 +408,7 @@ class ILQRSolver:
         self.G = G
         self.R = np.asarray(R, dtype=np.float64)
         self.G_f = G_f
+        self.S = np.asarray(S, dtype=np.float64) if S is not None else None
         self.max_iter = max_iter
         self.tol = tol
         self.lam_init = lam_init
@@ -431,6 +437,7 @@ class ILQRSolver:
         use_windowed_cost: bool = False,
         dt: float | None = None,
         w_rate_max: float | None = None,
+        q_rate_max: float | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list[float]]:
         """
         Run iLQR to find optimal controls U* that minimise tracking error.
@@ -449,6 +456,8 @@ class ILQRSolver:
             dt:                 timestep [s]  (required when use_windowed_cost=True)
             w_rate_max:         max bead width change per step [m/step]  (None = no limit).
                                 Enforced in _forward_pass() as |w[k]-w[k-1]| <= w_rate_max.
+            q_rate_max:         max flow command change per step [m³/s/step]  (None = no limit).
+                                Enforced in _forward_pass() as |Q[k]-Q[k-1]| <= q_rate_max.
 
         Returns:
             U_opt:      optimal controls [T, 2]
@@ -525,6 +534,7 @@ class ILQRSolver:
                 q_ref_true=q_ref if use_windowed_cost else None,
                 dt_win=dt if use_windowed_cost else None,
                 w_rate_max=w_rate_max,
+                q_rate_max=q_rate_max,
             )
 
             if alpha is None:
@@ -592,13 +602,17 @@ class ILQRSolver:
         q_ref: np.ndarray,
         U: np.ndarray,
     ) -> float:
-        """Sum stage costs + terminal cost."""
+        """Sum stage costs + terminal cost + rate penalty."""
         T = len(q_ref)
         total = sum(
             stage_cost(Q_out[k], q_ref[k], U[k], self.G, self.R)
             for k in range(T)
         )
         total += terminal_cost(Q_out[-1], q_ref[-1], self.G_f)
+        # Rate penalty: Σ_{k=1}^{T-1} (u_k - u_{k-1})^T S (u_k - u_{k-1})
+        if self.S is not None:
+            for k in range(1, T):
+                total += rate_cost(U[k], U[k - 1], self.S)
         return float(total)
 
     def _linearize_trajectory(
@@ -662,6 +676,19 @@ class ILQRSolver:
             l_uu = stage_d["l_uu"]
             l_xu = stage_d["l_xu"]
 
+            # Rate penalty: both backward-looking and forward-looking terms
+            if self.S is not None:
+                # Backward-looking: ∂/∂u_k of S*(u_k - u_{k-1})²
+                if k >= 1:
+                    rd = rate_derivatives(U[k], U[k - 1], self.S)
+                    l_u  = l_u  + rd["l_u_rate"]    # += 2·S·(u_k - u_{k-1})
+                    l_uu = l_uu + rd["l_uu_rate"]    # += 2·S
+                # Forward-looking: ∂/∂u_k of S*(u_{k+1} - u_k)²
+                if k < T - 1:
+                    du_fwd = U[k + 1] - U[k]
+                    l_u  = l_u  - 2.0 * self.S @ du_fwd   # += -2·S·(u_{k+1} - u_k)
+                    l_uu = l_uu + 2.0 * self.S             # += 2·S
+
             # Q-function approximation
             V_xx_reg = V_xx + lam * np.eye(n)
 
@@ -708,6 +735,7 @@ class ILQRSolver:
         q_ref_true: np.ndarray | None = None,
         dt_win: float | None = None,
         w_rate_max: float | None = None,
+        q_rate_max: float | None = None,
     ) -> tuple[np.ndarray | None, list | None, np.ndarray | None, float | None, float | None]:
         """
         Forward pass with Armijo line search.
@@ -754,6 +782,10 @@ class ILQRSolver:
                 if w_rate_max is not None:
                     w_prev = U_new[k - 1, 1] if k > 0 else U_nom[0, 1]
                     u_new_k[1] = np.clip(u_new_k[1], w_prev - w_rate_max, w_prev + w_rate_max)
+                # Rate-limit flow command: |Q[k] - Q[k-1]| <= q_rate_max (m³/s/step)
+                if q_rate_max is not None:
+                    q_prev = U_new[k - 1, 0] if k > 0 else U_nom[0, 0]
+                    u_new_k[0] = np.clip(u_new_k[0], q_prev - q_rate_max, q_prev + q_rate_max)
                 U_new[k] = u_new_k
 
                 # Step dynamics to get next state for gain computation
