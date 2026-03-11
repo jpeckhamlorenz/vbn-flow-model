@@ -238,6 +238,7 @@ class HybridDynamics:
         self,
         state0: HybridState,
         U: np.ndarray,
+        lstm_start_idx: int = 0,
     ) -> tuple[list[HybridState], np.ndarray]:
         """
         Full trajectory rollout.
@@ -286,7 +287,7 @@ class HybridDynamics:
         for k in range(T):
             Q_analytical_k = float(theta_dot_traj[k]) * self._er
 
-            if self.use_lstm:
+            if self.use_lstm and k >= lstm_start_idx:
                 Q_res_k, h_next, c_next = self.lstm.step(
                     float(Q_cmd_traj[k]),
                     float(w_cmd_traj[k]),

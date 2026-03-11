@@ -836,13 +836,12 @@ def main() -> None:
             s0 = s_idx * seg_len
             s1 = min(s0 + seg_len, N_ilqr)
 
-            # Multi-segment LSTM mode: segment 1 uses full hybrid model (LSTM
-            # in its training distribution, 0-450 steps from h,c=0).
-            # Segments 2+ use analytical-only mode because the step-mode LSTM
-            # is outside its training distribution beyond 450 steps.
-            # validate_ilqr_windowed.py captures the LSTM correction end-to-end.
+            # With the prefix rollout, dyn.rollout(state0_global, U_full) starts
+            # from h,c=0 and threads the LSTM through all prefix steps, so h,c
+            # at the segment boundary naturally reflects processing from zero.
+            # All segments can safely use hybrid mode.
             if n_segs > 1:
-                dyn.use_lstm = (s_idx == 0) and (not args.analytical_only)
+                dyn.use_lstm = not args.analytical_only
 
             if n_segs > 1:
                 mode_str = "hybrid" if dyn.use_lstm else "analytical-only"

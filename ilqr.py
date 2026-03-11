@@ -534,20 +534,31 @@ class ILQRSolver:
 
         # Initial forward rollout
         if U_prefix is not None and state0_global is not None:
-            # Prefix rollout: start from zero, roll through all previous
-            # segments then the current segment.  This avoids calling
-            # rollout_ode() with non-zero IC (which the MATLAB ODE solver
-            # does not handle correctly).  Only the segment portion is used
-            # for optimisation.
-            U_full = np.vstack([U_prefix, U])
-            states_full, Q_out_full = self.dyn.rollout(state0_global, U_full)
+            # Two-phase init for segments 2+:
+            #   Phase 1: Prefix-only rollout from zero to get boundary ODE state.
+            #            Uses rollout_ode() (single MATLAB call, correct from IC=[0,0]).
+            #            LSTM is skipped (lstm_start_idx >= len(U_prefix)).
+            #   Phase 2: Step-based init rollout for the segment.
+            #            Uses step_ode() + lstm.step() — same dynamics path as
+            #            _forward_pass(), ensuring consistent Armijo cost comparison.
             T_prefix = len(U_prefix)
-            states = states_full[T_prefix:]   # T+1 states (boundary → end)
-            Q_out = Q_out_full[T_prefix:]     # T outputs for segment
-            state0_eff = states_full[T_prefix]  # boundary state for _forward_pass
+            states_prefix, _ = self.dyn.rollout(
+                state0_global, U_prefix, lstm_start_idx=T_prefix
+            )
+            state0_eff = states_prefix[-1]  # boundary state, h,c=0
+
+            # Step-based segment init (consistent with _forward_pass dynamics)
+            states = [state0_eff]
+            Q_out = np.empty(T, dtype=np.float64)
+            state_k = state0_eff
+            for k in range(T):
+                state_k, q_k = self.dyn.step(state_k, U[k])
+                Q_out[k] = q_k
+                states.append(state_k)
+
             if self.verbose:
-                print(f"  Prefix rollout: {T_prefix} prefix steps + {T} segment steps "
-                      f"from global zero")
+                print(f"  Prefix rollout: {T_prefix} prefix steps, then {T} "
+                      f"step-mode init steps from boundary")
         else:
             states, Q_out = self.dyn.rollout(state0, U)
             state0_eff = state0
