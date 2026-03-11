@@ -294,11 +294,13 @@ def main() -> None:
         plt.plot(t, Q_com)
         plt.plot(t, Q_cmd_naive)
         plt.plot(t, Q_cmd_opt)
+        plt.show()
 
 
         plt.figure()
         plt.plot(t, w_cmd_naive)
         plt.plot(t, w_cmd_opt)
+        plt.show()
 
 
     print("\n  Done.")

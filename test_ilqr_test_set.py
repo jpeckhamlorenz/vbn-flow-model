@@ -862,18 +862,24 @@ def main() -> None:
             Q_out_iLQR[s0:s1] = Q_seg
             cost_hist.extend(ch)
 
-            # Thread ODE state to next segment; reset LSTM h,c=0
-            # (matches deployed windowed pipeline: each window starts from h,c=0)
+            # Thread full state (ODE + LSTM h,c) from the naive rollout to the
+            # next segment.  Using states_naive[s1] ensures:
+            #   (a) ODE state is consistent with U_naive (no optimized-state mismatch)
+            #   (b) LSTM h,c carry the hidden context from processing steps 0..s1,
+            #       avoiding the cold-start artifact (h,c=0 at steady state causes
+            #       the LSTM to predict spurious residuals because training windows
+            #       always start h,c=0 at transient onset, never at steady state).
+            # Validation via validate_ilqr_windowed.py re-runs the full U_opt from
+            # scratch through the deployed pipeline anyway.
             if s_idx < n_segs - 1:
-                states_seg, _ = dyn.rollout(state_curr, U_seg)
-                seg_final = states_seg[-1]
+                naive_boundary = states_naive[s1]
                 state_curr = HybridState(
-                    theta     = seg_final.theta,
-                    theta_dot = seg_final.theta_dot,
-                    motor_pos = seg_final.motor_pos,
-                    h = torch.zeros_like(seg_final.h),
-                    c = torch.zeros_like(seg_final.c),
-                    t = seg_final.t,
+                    theta     = naive_boundary.theta,
+                    theta_dot = naive_boundary.theta_dot,
+                    motor_pos = naive_boundary.motor_pos,
+                    h = naive_boundary.h,
+                    c = naive_boundary.c,
+                    t = naive_boundary.t,
                 )
 
         rmse_ilqr = np.sqrt(np.mean((Q_out_iLQR - q_ref) ** 2)) * _SCALE
