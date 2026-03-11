@@ -115,7 +115,13 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--eps_ode", type=float, default=1e-5,
                    help="FD perturbation for ODE state dims")
     p.add_argument("--eps_ctrl", type=float, default=1e-7,
-                   help="FD perturbation for control dims")
+                   help="(legacy) Absolute FD perturbation for controls")
+    p.add_argument("--eps_ctrl_rel", type=float, default=1e-3,
+                   help="Relative FD perturbation for controls (default: 1e-3)")
+    p.add_argument("--eps_ctrl_floor_Q", type=float, default=1e-12,
+                   help="Floor FD perturbation for Q_cmd [m^3/s]")
+    p.add_argument("--eps_ctrl_floor_w", type=float, default=1e-7,
+                   help="Floor FD perturbation for w_cmd [m]")
 
     # Misc
     p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"],
@@ -222,6 +228,9 @@ def main() -> None:
         tol=args.tol,
         eps_ode=args.eps_ode,
         eps_ctrl=args.eps_ctrl,
+        eps_ctrl_rel=args.eps_ctrl_rel,
+        eps_ctrl_floor_Q=args.eps_ctrl_floor_Q,
+        eps_ctrl_floor_w=args.eps_ctrl_floor_w,
         verbose=True,
     )
 

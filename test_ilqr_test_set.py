@@ -131,16 +131,25 @@ def _parse_args() -> argparse.Namespace:
                    metavar=("S_Q", "S_w"),
                    help="Rate penalty diagonal [S_Q, S_w]. Penalises control rate of change: "
                         "Σ (u[k]-u[k-1])^T diag(S) (u[k]-u[k-1]). "
-                        "Smooths controls without breaking iLQR convergence (unlike hard "
-                        "--w_rate_max / --q_rate_max which cause line search failure). "
-                        "Typical values: S_Q ~ 1e14-1e16, S_w ~ 1e6-1e9 "
-                        "(scale relative to G for desired smoothness). Default: None.")
+                        "Controls are in SI (Q_cmd~1e-8 m^3/s, w_cmd~3e-3 m) so S must be "
+                        "large to compete with tracking (G*e^2~1e-5 at G=1e15): "
+                        "S_Q ~ 1e16+ (dQ/step~1e-10), S_w ~ 1e8+ (dw/step~1e-5). "
+                        "Default: None.")
 
     # iLQR solver
     p.add_argument("--max_iter", type=int, default=10)
     p.add_argument("--tol",      type=float, default=1e-4)
     p.add_argument("--eps_ode",  type=float, default=1e-5)
-    p.add_argument("--eps_ctrl", type=float, default=1e-7)
+    p.add_argument("--eps_ctrl", type=float, default=1e-7,
+                   help="(legacy) Absolute FD perturbation for controls. Superseded by "
+                        "relative eps below.")
+    p.add_argument("--eps_ctrl_rel", type=float, default=1e-3,
+                   help="Relative FD perturbation for controls: eps = max(rel*|u|, floor). "
+                        "Default: 1e-3 (0.1%%).")
+    p.add_argument("--eps_ctrl_floor_Q", type=float, default=1e-12,
+                   help="Floor FD perturbation for Q_cmd [m^3/s]. Default: 1e-12.")
+    p.add_argument("--eps_ctrl_floor_w", type=float, default=1e-7,
+                   help="Floor FD perturbation for w_cmd [m]. Default: 1e-7.")
     p.add_argument("--use_windowed_cost", action="store_true",
                    help="Use windowed LSTM cost for iLQR (adjusts q_ref by windowed "
                         "residual each iteration so the optimizer targets the deployed "
@@ -161,7 +170,7 @@ def _parse_args() -> argparse.Namespace:
                    help="Max bead width ABOVE W_com[k] at each timestep [m]. "
                         "E.g. 2e-4 (= 0.2 mm). Intersected with --w_max. "
                         "None = no relative upper bound (only --w_max applies).")
-    p.add_argument("--w_delta_minus", type=float, default=0.0021,
+    p.add_argument("--w_delta_minus", type=float, default=0.0015,
                    help="Max bead width BELOW W_com[k] at each timestep [m]. "
                         "E.g. 4e-4 (= 0.4 mm). Intersected with --w_min. "
                         "None = no relative lower bound (only --w_min applies).")
@@ -800,6 +809,9 @@ def main() -> None:
             tol=args.tol,
             eps_ode=args.eps_ode,
             eps_ctrl=args.eps_ctrl,
+            eps_ctrl_rel=args.eps_ctrl_rel,
+            eps_ctrl_floor_Q=args.eps_ctrl_floor_Q,
+            eps_ctrl_floor_w=args.eps_ctrl_floor_w,
             verbose=True,
         )
         if args.use_windowed_cost:

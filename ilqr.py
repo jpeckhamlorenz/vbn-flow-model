@@ -60,20 +60,31 @@ class HybridLinearizer:
         dyn: HybridDynamics,
         eps_ode: float = 1e-5,
         eps_ctrl: float = 1e-7,
+        eps_ctrl_rel: float = 1e-3,
+        eps_ctrl_floor_Q: float = 1e-12,
+        eps_ctrl_floor_w: float = 1e-7,
     ) -> None:
         """
         Args:
-            dyn:      HybridDynamics instance
-            eps_ode:  FD perturbation for ODE state dims (theta, theta_dot, motor_pos)
-            eps_ctrl: FD perturbation for control dims (Q_cmd, w_cmd)
+            dyn:              HybridDynamics instance
+            eps_ode:          FD perturbation for ODE state dims (theta, theta_dot, motor_pos)
+            eps_ctrl:         (legacy) absolute FD perturbation for control dims — superseded
+                              by relative eps below but kept for backward compatibility
+            eps_ctrl_rel:     relative FD perturbation for controls (fraction of |u|)
+            eps_ctrl_floor_Q: absolute floor for Q_cmd perturbation [m^3/s]
+            eps_ctrl_floor_w: absolute floor for w_cmd perturbation [m]
         """
         self.dyn = dyn
         self.eps_ode = eps_ode
         self.eps_ctrl = eps_ctrl
+        self.eps_ctrl_rel = eps_ctrl_rel
+        self.eps_ctrl_floor_Q = eps_ctrl_floor_Q
+        self.eps_ctrl_floor_w = eps_ctrl_floor_w
         self._er = dyn.bridge.extrusion_ratio
         self._lstm = dyn.lstm
         self._n = dyn.state_dim
         self._m = dyn.ctrl_dim
+        self._first_ctrl_call = True
 
     # ------------------------------------------------------------------
 
@@ -220,9 +231,19 @@ class HybridLinearizer:
 
         Returns shape (2, 2): rows = [theta_next, theta_dot_next], cols = [Q_cmd, w_cmd]
         """
-        eps = self.eps_ctrl
         Q_cmd_k = float(u_k[0])
         w_cmd_k = float(u_k[1])
+
+        # Per-channel relative FD: eps = max(rel * |u|, floor)
+        eps_Q = max(self.eps_ctrl_rel * abs(Q_cmd_k), self.eps_ctrl_floor_Q)
+        eps_w = max(self.eps_ctrl_rel * abs(w_cmd_k), self.eps_ctrl_floor_w)
+
+        if self._first_ctrl_call:
+            self._first_ctrl_call = False
+            motor_pert = eps_Q * self.dyn.dt / self._er
+            print(f"  FD ctrl eps: Q_cmd={eps_Q:.3e} m^3/s "
+                  f"(motor pert={motor_pert:.3e} rad), "
+                  f"w_cmd={eps_w:.3e} m ({eps_w / max(abs(w_cmd_k), 1e-30) * 100:.2f}%)")
 
         def _step(Q_cmd, w_cmd):
             th, thd, _ = self.dyn.bridge.step_ode(
@@ -236,8 +257,8 @@ class HybridLinearizer:
             )
             return np.array([th, thd])
 
-        col_Qcmd = (_step(Q_cmd_k + eps, w_cmd_k) - _step(Q_cmd_k - eps, w_cmd_k)) / (2 * eps)
-        col_wcmd = (_step(Q_cmd_k, w_cmd_k + eps) - _step(Q_cmd_k, w_cmd_k - eps)) / (2 * eps)
+        col_Qcmd = (_step(Q_cmd_k + eps_Q, w_cmd_k) - _step(Q_cmd_k - eps_Q, w_cmd_k)) / (2 * eps_Q)
+        col_wcmd = (_step(Q_cmd_k, w_cmd_k + eps_w) - _step(Q_cmd_k, w_cmd_k - eps_w)) / (2 * eps_w)
 
         return np.stack([col_Qcmd, col_wcmd], axis=1)  # [2, 2]
 
@@ -381,6 +402,9 @@ class ILQRSolver:
         alpha_decay: float = 0.5,
         eps_ode: float = 1e-5,
         eps_ctrl: float = 1e-7,
+        eps_ctrl_rel: float = 1e-3,
+        eps_ctrl_floor_Q: float = 1e-12,
+        eps_ctrl_floor_w: float = 1e-7,
         verbose: bool = True,
     ) -> None:
         """
@@ -401,7 +425,10 @@ class ILQRSolver:
             n_alpha:     number of line search halvings before giving up
             alpha_decay: multiply alpha by this factor each halving (0.5 = halving)
             eps_ode:     FD perturbation for ODE state dims
-            eps_ctrl:    FD perturbation for control dims
+            eps_ctrl:    (legacy) absolute FD perturbation for control dims
+            eps_ctrl_rel:     relative FD perturbation for controls (fraction of |u|)
+            eps_ctrl_floor_Q: absolute floor for Q_cmd perturbation [m^3/s]
+            eps_ctrl_floor_w: absolute floor for w_cmd perturbation [m]
             verbose:     print iteration progress
         """
         self.dyn = dynamics
@@ -420,7 +447,12 @@ class ILQRSolver:
         self.verbose = verbose
 
         self._linearizer = HybridLinearizer(
-            dynamics, eps_ode=eps_ode, eps_ctrl=eps_ctrl
+            dynamics,
+            eps_ode=eps_ode,
+            eps_ctrl=eps_ctrl,
+            eps_ctrl_rel=eps_ctrl_rel,
+            eps_ctrl_floor_Q=eps_ctrl_floor_Q,
+            eps_ctrl_floor_w=eps_ctrl_floor_w,
         )
         self._n = dynamics.state_dim
         self._m = dynamics.ctrl_dim
@@ -499,6 +531,34 @@ class ILQRSolver:
         if self.verbose:
             mode_str = " [windowed cost]" if use_windowed_cost else ""
             print(f"iLQR init{mode_str}: cost = {cost:.6e}")
+            # Cost component diagnostics — reveals scale mismatches
+            e_rms = np.sqrt(np.mean((Q_out_bp - q_ref_bp) ** 2))
+            u_Q_rms = np.sqrt(np.mean(U[:, 0] ** 2))
+            u_w_rms = np.sqrt(np.mean(U[:, 1] ** 2))
+            track_mag = self.G * e_rms ** 2
+            ctrl_Q_mag = self.R[0, 0] * u_Q_rms ** 2
+            ctrl_w_mag = self.R[1, 1] * u_w_rms ** 2
+            print(f"  Scale check (per-step magnitudes):")
+            print(f"    Tracking:  G*e^2       = {track_mag:.3e}  "
+                  f"(G={self.G:.1e}, e_rms={e_rms:.3e} m^3/s)")
+            print(f"    Control Q: R_Q*Q^2     = {ctrl_Q_mag:.3e}  "
+                  f"(R_Q={self.R[0,0]:.1e}, Q_rms={u_Q_rms:.3e})")
+            print(f"    Control w: R_w*w^2     = {ctrl_w_mag:.3e}  "
+                  f"(R_w={self.R[1,1]:.1e}, w_rms={u_w_rms:.3e})")
+            if self.S is not None and T > 1:
+                du_Q_rms = np.sqrt(np.mean(np.diff(U[:, 0]) ** 2))
+                du_w_rms = np.sqrt(np.mean(np.diff(U[:, 1]) ** 2))
+                rate_Q_mag = self.S[0, 0] * du_Q_rms ** 2
+                rate_w_mag = self.S[1, 1] * du_w_rms ** 2
+                print(f"    Rate Q:    S_Q*dQ^2    = {rate_Q_mag:.3e}  "
+                      f"(S_Q={self.S[0,0]:.1e}, dQ_rms={du_Q_rms:.3e})")
+                print(f"    Rate w:    S_w*dw^2    = {rate_w_mag:.3e}  "
+                      f"(S_w={self.S[1,1]:.1e}, dw_rms={du_w_rms:.3e})")
+            ratio_Q = track_mag / max(ctrl_Q_mag, 1e-30)
+            ratio_w = track_mag / max(ctrl_w_mag, 1e-30)
+            if ratio_Q > 1e6 or ratio_w > 1e6:
+                print(f"  WARNING: tracking/control ratio Q={ratio_Q:.1e} w={ratio_w:.1e}  "
+                      f"— R may be too small to affect optimization")
 
         for it in range(self.max_iter):
             # ---- Linearize
