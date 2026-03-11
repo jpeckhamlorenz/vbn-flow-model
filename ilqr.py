@@ -127,26 +127,34 @@ class HybridLinearizer:
         # motor_pos row: motor_pos_next = motor_pos_k + Q_cmd_k * dt / ER  (analytical)
         A_k[2, 2] = 1.0  # ∂motor_pos_next/∂motor_pos = 1
 
-        # ---- 2. LSTM rows (3-n): autograd --------------------------------
+        # ---- 2. LSTM rows (3-n) ---------------------------------------------
 
-        lstm_jac = self._lstm_jacobians(
-            Q_cmd_k, w_cmd_k, Q_analytical_nom, state_k.h, state_k.c
-        )
         # Layout: h_flat is indices [3, 3+lstm_sz), c_flat is [3+lstm_sz, n)
         lstm_sz = self._lstm._num_layers * self._lstm._hidden_size
         h_idx = slice(3, 3 + lstm_sz)
         c_idx = slice(3 + lstm_sz, n)
 
-        # ∂(h_next, c_next)/∂theta: 0 (theta doesn't enter LSTM)
-        # ∂(h_next, c_next)/∂theta_dot: via Q_analytical = theta_dot * ER
-        A_k[h_idx, 1] = lstm_jac["dh_dQanal"] * self._er  # chain rule
-        A_k[c_idx, 1] = lstm_jac["dc_dQanal"] * self._er
-        # ∂(h_next, c_next)/∂motor_pos: 0
-        # ∂(h_next, c_next)/∂h, ∂c
-        A_k[h_idx, h_idx] = lstm_jac["dh_dh"]
-        A_k[h_idx, c_idx] = lstm_jac["dh_dc"]
-        A_k[c_idx, h_idx] = lstm_jac["dc_dh"]
-        A_k[c_idx, c_idx] = lstm_jac["dc_dc"]
+        if self.dyn.use_lstm:
+            # Full hybrid mode: autograd through LSTM for h,c and Q_res rows
+            lstm_jac = self._lstm_jacobians(
+                Q_cmd_k, w_cmd_k, Q_analytical_nom, state_k.h, state_k.c
+            )
+
+            # ∂(h_next, c_next)/∂theta: 0 (theta doesn't enter LSTM)
+            # ∂(h_next, c_next)/∂theta_dot: via Q_analytical = theta_dot * ER
+            A_k[h_idx, 1] = lstm_jac["dh_dQanal"] * self._er  # chain rule
+            A_k[c_idx, 1] = lstm_jac["dc_dQanal"] * self._er
+            # ∂(h_next, c_next)/∂motor_pos: 0
+            # ∂(h_next, c_next)/∂h, ∂c
+            A_k[h_idx, h_idx] = lstm_jac["dh_dh"]
+            A_k[h_idx, c_idx] = lstm_jac["dh_dc"]
+            A_k[c_idx, h_idx] = lstm_jac["dc_dh"]
+            A_k[c_idx, c_idx] = lstm_jac["dc_dc"]
+        else:
+            # Analytical-only mode: h,c pass through unchanged (identity),
+            # no LSTM coupling to theta_dot or controls.
+            A_k[h_idx, h_idx] = np.eye(lstm_sz)
+            A_k[c_idx, c_idx] = np.eye(lstm_sz)
 
         # ---- 3. Control Jacobian B_k -------------------------------------
 
@@ -155,28 +163,35 @@ class HybridLinearizer:
         # Row 2 (motor_pos): ∂motor_pos_next/∂Q_cmd = dt/ER, ∂.../∂w_cmd = 0
         B_k[2, 0] = self.dyn.dt / self._er
         B_k[2, 1] = 0.0
-        # LSTM rows: autograd
-        B_k[h_idx, 0] = lstm_jac["dh_dQcmd"]
-        B_k[h_idx, 1] = lstm_jac["dh_dwcmd"]
-        B_k[c_idx, 0] = lstm_jac["dc_dQcmd"]
-        B_k[c_idx, 1] = lstm_jac["dc_dwcmd"]
+
+        if self.dyn.use_lstm:
+            # LSTM rows of B_k: autograd
+            B_k[h_idx, 0] = lstm_jac["dh_dQcmd"]
+            B_k[h_idx, 1] = lstm_jac["dh_dwcmd"]
+            B_k[c_idx, 0] = lstm_jac["dc_dQcmd"]
+            B_k[c_idx, 1] = lstm_jac["dc_dwcmd"]
+        # else: B_k LSTM rows stay zero (h,c don't depend on controls)
 
         # ---- 4. Output Jacobians dq_dx, dq_du ----------------------------
 
-        # q_out_k = theta_dot_k * ER + Q_res_k
-        # ∂q_out/∂theta = 0
-        dq_dx[0] = 0.0
-        # ∂q_out/∂theta_dot = ER + ∂Q_res/∂theta_dot (via Q_analytical)
-        dq_dx[1] = self._er + lstm_jac["dQres_dQanal"] * self._er
-        # ∂q_out/∂motor_pos = 0
-        dq_dx[2] = 0.0
-        # ∂q_out/∂(h, c)
-        dq_dx[h_idx] = lstm_jac["dQres_dh"]
-        dq_dx[c_idx] = lstm_jac["dQres_dc"]
+        dq_dx[0] = 0.0   # ∂q_out/∂theta = 0
+        dq_dx[2] = 0.0   # ∂q_out/∂motor_pos = 0
 
-        # ∂q_out/∂Q_cmd, ∂q_out/∂w_cmd
-        dq_du[0] = lstm_jac["dQres_dQcmd"]
-        dq_du[1] = lstm_jac["dQres_dwcmd"]
+        if self.dyn.use_lstm:
+            # q_out_k = theta_dot_k * ER + Q_res_k
+            # ∂q_out/∂theta_dot = ER + ∂Q_res/∂Q_analytical * ER
+            dq_dx[1] = self._er + lstm_jac["dQres_dQanal"] * self._er
+            # ∂q_out/∂(h, c)
+            dq_dx[h_idx] = lstm_jac["dQres_dh"]
+            dq_dx[c_idx] = lstm_jac["dQres_dc"]
+            # ∂q_out/∂Q_cmd, ∂q_out/∂w_cmd
+            dq_du[0] = lstm_jac["dQres_dQcmd"]
+            dq_du[1] = lstm_jac["dQres_dwcmd"]
+        else:
+            # Analytical-only: q_out = theta_dot * ER (no LSTM residual)
+            dq_dx[1] = self._er
+            # dq_dx[h,c] = 0  (already zeroed)
+            # dq_du = 0        (already zeroed — q_out doesn't depend on u directly)
 
         return A_k, B_k, dq_dx, dq_du
 
@@ -470,6 +485,8 @@ class ILQRSolver:
         dt: float | None = None,
         w_rate_max: float | None = None,
         q_rate_max: float | None = None,
+        U_prefix: np.ndarray | None = None,
+        state0_global: HybridState | None = None,
     ) -> tuple[np.ndarray, np.ndarray, list[float]]:
         """
         Run iLQR to find optimal controls U* that minimise tracking error.
@@ -490,6 +507,14 @@ class ILQRSolver:
                                 Enforced in _forward_pass() as |w[k]-w[k-1]| <= w_rate_max.
             q_rate_max:         max flow command change per step [m³/s/step]  (None = no limit).
                                 Enforced in _forward_pass() as |Q[k]-Q[k-1]| <= q_rate_max.
+            U_prefix:           fixed controls for previous segments [T_prefix, 2].
+                                When provided (with state0_global), the initial forward
+                                rollout starts from state0_global (zero), rolls through
+                                U_prefix, then U_init — ensuring rollout_ode() always
+                                starts from IC=[0,0].  Only the segment portion
+                                (after the prefix) is used for optimization.
+            state0_global:      global zero HybridState for prefix rollout.
+                                Required when U_prefix is set.
 
         Returns:
             U_opt:      optimal controls [T, 2]
@@ -508,7 +533,24 @@ class ILQRSolver:
         cost_hist: list[float] = []
 
         # Initial forward rollout
-        states, Q_out = self.dyn.rollout(state0, U)
+        if U_prefix is not None and state0_global is not None:
+            # Prefix rollout: start from zero, roll through all previous
+            # segments then the current segment.  This avoids calling
+            # rollout_ode() with non-zero IC (which the MATLAB ODE solver
+            # does not handle correctly).  Only the segment portion is used
+            # for optimisation.
+            U_full = np.vstack([U_prefix, U])
+            states_full, Q_out_full = self.dyn.rollout(state0_global, U_full)
+            T_prefix = len(U_prefix)
+            states = states_full[T_prefix:]   # T+1 states (boundary → end)
+            Q_out = Q_out_full[T_prefix:]     # T outputs for segment
+            state0_eff = states_full[T_prefix]  # boundary state for _forward_pass
+            if self.verbose:
+                print(f"  Prefix rollout: {T_prefix} prefix steps + {T} segment steps "
+                      f"from global zero")
+        else:
+            states, Q_out = self.dyn.rollout(state0, U)
+            state0_eff = state0
 
         if use_windowed_cost:
             # Q_vbn[k] = ODE angular velocity at t_k × extrusion ratio
@@ -589,7 +631,7 @@ class ILQRSolver:
             # G*||Q_vbn_new + Q_res_win_new - q_ref||^2 + R*||U_new||^2,
             # making it consistent with the outer cost and preventing oscillation.
             U_new, states_new, Q_out_new, cost_proxy, alpha = self._forward_pass(
-                state0, states, U, Q_out_bp, Ks, ks, q_ref_bp, u_min, u_max,
+                state0_eff, states, U, Q_out_bp, Ks, ks, q_ref_bp, u_min, u_max,
                 use_windowed_cost=use_windowed_cost,
                 q_ref_true=q_ref if use_windowed_cost else None,
                 dt_win=dt if use_windowed_cost else None,

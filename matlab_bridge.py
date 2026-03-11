@@ -141,6 +141,7 @@ class MatlabBridge:
         Q_cmd: np.ndarray,
         w_cmd: np.ndarray,
         IC: np.ndarray = np.array([0.0, 0.0]),
+        motor_pos_initial: float = 0.0,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Full trajectory ODE rollout in a single MATLAB call.
@@ -150,6 +151,10 @@ class MatlabBridge:
             Q_cmd: commanded flowrate [m³/s], shape (T,)
             w_cmd: commanded bead width [m], shape (T,)
             IC:    initial conditions [theta_0 (rad), theta_dot_0 (rad/s)]
+            motor_pos_initial: initial motor position [rad] at ts[0].
+                   Must be consistent with IC[0] (theta_0) to avoid a
+                   forcing mismatch in the ODE (forcing ∝ motor_pos − theta).
+                   Default 0.0 matches the zero-start case.
 
         Returns:
             theta_traj:     rotor angle [rad], shape (T,)
@@ -163,8 +168,11 @@ class MatlabBridge:
         IC = np.asarray(IC, dtype=np.float64).ravel()  # coerce — engine needs ndarray, not list
 
         # Cumulative motor angle [rad] — matches flow_predictor_analytical.py:48
+        # When starting from a non-zero state (segment 2+), motor_pos_initial
+        # must match the theta IC to avoid a forcing mismatch in the ODE
+        # (the ODE forcing is proportional to motor_pos − theta).
         input_motor = integrate.cumulative_trapezoid(
-            Q_cmd / self.extrusion_ratio, ts, initial=0.0
+            Q_cmd / self.extrusion_ratio, ts, initial=motor_pos_initial
         )
 
         # Pass numpy arrays directly — matlab.engine converts ndarray → MATLAB double vector.

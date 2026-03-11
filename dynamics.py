@@ -268,7 +268,8 @@ class HybridDynamics:
         # ODE: full trajectory in ONE MATLAB call
         IC = np.array([state0.theta, state0.theta_dot])
         theta_traj, theta_dot_traj, _ = self.bridge.rollout_ode(
-            ts, Q_cmd_full, w_cmd_full, IC
+            ts, Q_cmd_full, w_cmd_full, IC,
+            motor_pos_initial=state0.motor_pos,
         )
 
         # Cumulative motor position — computed analytically, no MATLAB needed

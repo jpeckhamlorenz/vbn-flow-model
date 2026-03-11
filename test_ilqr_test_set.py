@@ -835,15 +835,34 @@ def main() -> None:
         for s_idx in range(n_segs):
             s0 = s_idx * seg_len
             s1 = min(s0 + seg_len, N_ilqr)
+
+            # Multi-segment LSTM mode: segment 1 uses full hybrid model (LSTM
+            # in its training distribution, 0-450 steps from h,c=0).
+            # Segments 2+ use analytical-only mode because the step-mode LSTM
+            # is outside its training distribution beyond 450 steps.
+            # validate_ilqr_windowed.py captures the LSTM correction end-to-end.
             if n_segs > 1:
+                dyn.use_lstm = (s_idx == 0) and (not args.analytical_only)
+
+            if n_segs > 1:
+                mode_str = "hybrid" if dyn.use_lstm else "analytical-only"
                 print(f"\n  --- Segment {s_idx + 1}/{n_segs}: "
-                      f"steps [{s0}:{s1}]  ({s0*dt:.2f}–{s1*dt:.2f} s) ---")
+                      f"steps [{s0}:{s1}]  ({s0*dt:.2f}–{s1*dt:.2f} s) "
+                      f"[{mode_str}] ---")
 
             # Slice bounds: support both constant [2] and time-varying [N, 2]
             um  = (u_min[s0:s1] if isinstance(u_min, np.ndarray) and u_min.ndim > 1
                    else u_min)
             umx = (u_max[s0:s1] if isinstance(u_max, np.ndarray) and u_max.ndim > 1
                    else u_max)
+
+            # Build prefix from optimised controls of all previous segments.
+            # For segment 1 (s0=0): no prefix, solve() uses the standard path.
+            # For segments 2+: prefix = U_opt[:s0], state0_global = zero state.
+            # solve() rolls from zero through the prefix then the segment,
+            # ensuring rollout_ode() always starts from IC=[0,0].
+            U_prefix = U_opt[:s0].copy() if s0 > 0 else None
+            state0_global = state0 if s0 > 0 else None
 
             U_seg, Q_seg, ch = solver.solve(
                 state0=state_curr,
@@ -856,31 +875,13 @@ def main() -> None:
                             else None),
                 q_rate_max=(args.q_rate_max * (1e-6 / 60) * dt if args.q_rate_max is not None
                             else None),
+                U_prefix=U_prefix,
+                state0_global=state0_global,
             )
 
             U_opt[s0:s1]      = U_seg
             Q_out_iLQR[s0:s1] = Q_seg
             cost_hist.extend(ch)
-
-            # Thread full state (ODE + LSTM h,c) from the naive rollout to the
-            # next segment.  Using states_naive[s1] ensures:
-            #   (a) ODE state is consistent with U_naive (no optimized-state mismatch)
-            #   (b) LSTM h,c carry the hidden context from processing steps 0..s1,
-            #       avoiding the cold-start artifact (h,c=0 at steady state causes
-            #       the LSTM to predict spurious residuals because training windows
-            #       always start h,c=0 at transient onset, never at steady state).
-            # Validation via validate_ilqr_windowed.py re-runs the full U_opt from
-            # scratch through the deployed pipeline anyway.
-            if s_idx < n_segs - 1:
-                naive_boundary = states_naive[s1]
-                state_curr = HybridState(
-                    theta     = naive_boundary.theta,
-                    theta_dot = naive_boundary.theta_dot,
-                    motor_pos = naive_boundary.motor_pos,
-                    h = naive_boundary.h,
-                    c = naive_boundary.c,
-                    t = naive_boundary.t,
-                )
 
         rmse_ilqr = np.sqrt(np.mean((Q_out_iLQR - q_ref) ** 2)) * _SCALE
 
