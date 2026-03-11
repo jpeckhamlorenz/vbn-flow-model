@@ -20,14 +20,21 @@ vbn-flow-model/
 ├── flow_predictor_analytical.py     # Python→MATLAB bridge (per-call engine, original)
 ├── flow_predictor_lstm.py           # Windowed batch LSTM inference (original)
 │
-│── ── iLQR FFEC modules (new, March 2025) ──
+│── ── iLQR FFEC modules (March 2025–) ──
 ├── matlab_bridge.py                 # Persistent MATLAB engine singleton (MatlabBridge)
 ├── lstm_step.py                     # Step-mode LSTM wrapper with (h,c) threading
 ├── dynamics.py                      # HybridState dataclass + HybridDynamics
 ├── cost.py                          # Quadratic cost + analytic Jacobians (Gauss-Newton)
 ├── ilqr.py                          # HybridLinearizer + ILQRSolver (FD + autograd)
 ├── run_ffec.py                      # CLI entry point for full iLQR FFEC run
+├── run_ilqr_deploy.py               # Deployment entry point for iLQR FFEC
 ├── validate_modules.py              # Standalone validation tests (Tests 1, 2, 3)
+├── validate_ilqr_windowed.py        # Validates windowed LSTM vs step-mode agreement
+│
+│── ── iLQR test / sweep scripts ──
+├── test_ilqr_test_set.py            # Multi-segment iLQR test runner (main evaluation script)
+├── test_ilqr_pipeline.py            # Single-trajectory iLQR pipeline test
+├── ilqr_sweep.py                    # Hyperparameter sweep over iLQR cost weights
 │
 │── ── Model architecture ──
 ├── models/
@@ -103,28 +110,44 @@ vbn-flow-model/
 
 ## Coding Conventions
 - Python 3.x, PyTorch for ML, NumPy for array ops
-- MATLAB engine calls are managed through flow_predictor_analytical.py — do not 
+- MATLAB engine calls are managed through matlab_bridge.py (persistent
+  singleton) or flow_predictor_analytical.py (legacy per-call) — do not
   instantiate matlab.engine elsewhere
 - All new modules should have a brief docstring describing inputs/outputs
   and units (flowrate in mL/min, width in mm, time in seconds — confirm these)
 - Use type hints on all new function signatures
 
 ## Active Development Goals (in priority order)
-1. Refactor flow_predictor.py to expose step-by-step LSTM interface with 
-   accessible hidden state
-2. Implement dynamics_step() wrapping MATLAB + LSTM for iLQR linearization
-3. Implement iLQR solver (finite differences linearization — Path 1)
-4. Validate on single corner/U-turn feature against known defect profile
-5. (Stretch) Replace MATLAB ODE solver with JAX/diffrax stiff solver
+1. Integrate iLQR into the prediction pipeline for arbitrary trajectories
+   generated from vbn_pathgen (inputs/pathgen.py)
+2. Refactor w_cmd_opt to a piecewise-linear function of linear toolpath moves
+   (currently continuously changing per trajectory)
+3. Replace CLI argument parsing with a config dict/dataclass or dedicated
+   config JSON file for iLQR parameters
+4. Add tqdm progress bars to iLQR iterations and segment loops
+5. (Stretch) Port optimisation to Crocoddyl library for DDP/iLQR solvers
+6. (Stretch) Replace MATLAB ODE solver with JAX/diffrax stiff solver
+   (Kvaerno5 or ImplicitEuler)
 
 ## Known Issues and Context
 - MATLAB ode15s is used because a previous JAX ODE implementation hung —
-  suspected cause is stiffness (fast acoustic timescale vs slow viscous 
+  suspected cause is stiffness (fast acoustic timescale vs slow viscous
   timescale). Stiff solver (diffrax Kvaerno5 or ImplicitEuler) not yet tried.
-- LSTM currently runs in batch mode (full sequence in, full sequence out).
-  Needs refactor to expose single-step mode with (h, c) state threading.
-- iLQR linearization will use finite differences through the full hybrid 
-  pipeline due to MATLAB not being autodiff-able.
+- rollout_ode() vs step_ode() model mismatch: rollout_ode() (single MATLAB call,
+  interpolated) and step_ode() (per-step MATLAB calls, endpoint extraction) give
+  slightly different theta_dot trajectories. The LSTM amplifies this difference.
+  Solved by using step_ode() consistently for iLQR forward passes; rollout_ode()
+  is used only for prefix boundary-state computation.
+- MATLAB ODE solver only produces correct trajectories when starting from zero
+  ICs. Multi-segment iLQR uses prefix rollout from zero to get boundary states.
+- LSTM training distribution: 4.5 s / 450-step windows with h,c reset to zero.
+  Step-mode LSTM must not exceed this horizon per segment. Multi-segment iLQR
+  resets h,c at each segment boundary.
+- iLQR linearization uses hybrid FD (ODE rows) + autograd (LSTM rows) because
+  MATLAB is not autodiff-able.
+- Norm stats not stored in checkpoint — recomputed at runtime from train split.
+- iLQR backward pass: V_xx is n×n (n=259 for current model); memory grows
+  linearly with horizon T.
 
 ## What Claude Code Should NOT Do
 - Do not refactor or rename existing working modules without being asked
