@@ -470,7 +470,7 @@ def main() -> None:
         run_config=run_config,
         train_list_path=cfg.data.train_list,
         data_folder=cfg.data.data_folder,
-        device=cfg.data.device,
+        device=cfg.display.device,
     )
 
     from dynamics import HybridDynamics

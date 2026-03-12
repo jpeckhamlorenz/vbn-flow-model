@@ -142,31 +142,36 @@ def _load_from_path(npz_path: Path, dt_target: float) -> dict:
 
     Supports the same key conventions as test_ilqr_test_set._load_base():
       - Ground truth: Q_sim (simulated), Q_exp (experimental), or Q_tru (windowed)
+        (optional — returns None if absent, windowed reference and Q_tru-dependent
+        plots/metrics are skipped automatically)
+      - Q_vbn, Q_res: optional — returns None if absent, windowed reference is skipped
       - Width: W_com (m); if absent, falls back to _W_DEFAULT
 
     Returns dict with keys: t, dt, N, Q_com, Q_vbn, Q_res, Q_tru, W_com
-    All flowrates in m³/s; widths in m; time in s.
+    Q_vbn, Q_res, Q_tru may be None. All flowrates in m³/s; widths in m; time in s.
     """
     print(f"  Loading: {npz_path}")
     d = np.load(npz_path)
 
+    q_tru_raw = None
     for key in ("Q_sim", "Q_exp", "Q_tru"):
         if key in d:
             q_tru_raw = d[key].ravel().astype(np.float64)
             print(f"  Ground truth key: '{key}'")
             break
-    else:
-        raise KeyError(
-            f"No ground-truth key (Q_sim / Q_exp / Q_tru) in {npz_path.name}. "
-            f"Found: {list(d.keys())}"
-        )
+    if q_tru_raw is None:
+        print(f"  ⚠  No ground-truth key (Q_sim / Q_exp / Q_tru) found — "
+              f"RMSE vs ground truth and full-trajectory plot will be skipped.")
 
     time_raw  = d["time"].ravel().astype(np.float64)
     Q_com_raw = d["Q_com"].ravel().astype(np.float64)
-    Q_vbn_raw = d["Q_vbn"].ravel().astype(np.float64)
-    Q_res_raw = d["Q_res"].ravel().astype(np.float64)
+    Q_vbn_raw = (d["Q_vbn"].ravel().astype(np.float64) if "Q_vbn" in d else None)
+    Q_res_raw = (d["Q_res"].ravel().astype(np.float64) if "Q_res" in d else None)
     W_com_raw = (d["W_com"].ravel().astype(np.float64) if "W_com" in d
                  else np.full(len(time_raw), _W_DEFAULT, dtype=np.float64))
+
+    if Q_vbn_raw is None:
+        print(f"  ⚠  Q_vbn absent — windowed LSTM reference will be skipped.")
 
     dt_raw = float(np.median(np.diff(time_raw)))
     ds = max(1, int(round(dt_target / dt_raw)))
@@ -186,9 +191,9 @@ def _load_from_path(npz_path: Path, dt_target: float) -> dict:
     return dict(
         t=t, dt=dt, N=N,
         Q_com=Q_com_raw[sl].copy(),
-        Q_vbn=Q_vbn_raw[sl].copy(),
-        Q_res=Q_res_raw[sl].copy(),
-        Q_tru=q_tru_raw[sl].copy(),
+        Q_vbn=Q_vbn_raw[sl].copy() if Q_vbn_raw is not None else None,
+        Q_res=Q_res_raw[sl].copy() if Q_res_raw is not None else None,
+        Q_tru=q_tru_raw[sl].copy() if q_tru_raw is not None else None,
         W_com=W_com_raw[sl].copy(),
     )
 
@@ -247,7 +252,6 @@ def main() -> None:
     from matlab_bridge import MatlabBridge
     bridge = MatlabBridge(fluid=cfg.physics.fluid, mixer=cfg.physics.mixer,
                           pump=cfg.physics.pump)
-    bridge.start()
 
     from lstm_step import LSTMStepWrapper
     lstm = LSTMStepWrapper(
@@ -259,13 +263,17 @@ def main() -> None:
     )
 
     # ── Windowed LSTM reference (full trajectory) ─────────────────────────────
-    from test_ilqr_test_set import _run_windowed_lstm
-    print(f"\n  Running windowed LSTM reference on full trajectory ({N_full} samples)…")
-    Q_pred_windowed_full = _run_windowed_lstm(
-        Q_com=Q_com, Q_vbn=Q_vbn, W_com=W_com,
-        lstm=lstm, N=N_full, dt=dt,
-        window_len_s=cfg.run.window_len_s, window_step_s=cfg.run.window_step_s,
-    )
+    Q_pred_windowed_full = None
+    if Q_vbn is not None:
+        from test_ilqr_test_set import _run_windowed_lstm
+        print(f"\n  Running windowed LSTM reference on full trajectory ({N_full} samples)…")
+        Q_pred_windowed_full = _run_windowed_lstm(
+            Q_com=Q_com, Q_vbn=Q_vbn, w_nom_m=cfg.physics.w_nom,
+            lstm=lstm, N=N_full, dt=dt,
+            window_len_s=cfg.run.window_len_s, window_step_s=cfg.run.window_step_s,
+        )
+    else:
+        print("\n  Skipping windowed LSTM reference (Q_vbn not available).")
 
     # ── Hybrid dynamics naive rollout ─────────────────────────────────────────
     from dynamics import HybridDynamics
@@ -366,9 +374,16 @@ def main() -> None:
         dtype=np.float64,
     )
     Q_res_stepmode = Q_out_naive - Q_anal_stepmode
-    Q_res_windowed = Q_pred_windowed_full[:N_ilqr] - Q_vbn[:N_ilqr]
-    rmse_win = (np.sqrt(np.mean(
-        (Q_pred_windowed_full[:N_ilqr] - Q_com[:N_ilqr]) ** 2)) * _SCALE)
+
+    # Windowed residual and RMSE — only available if Q_vbn was present
+    Q_res_windowed = (
+        Q_pred_windowed_full[:N_ilqr] - Q_vbn[:N_ilqr]
+        if Q_pred_windowed_full is not None and Q_vbn is not None else None
+    )
+    rmse_win = (
+        np.sqrt(np.mean((Q_pred_windowed_full[:N_ilqr] - Q_com[:N_ilqr]) ** 2)) * _SCALE
+        if Q_pred_windowed_full is not None else None
+    )
 
     fig_a = _plot_flowrate_comparison(
         parent_id=parent_id,
@@ -388,7 +403,7 @@ def main() -> None:
     fig_b = _plot_ilqr_diagnostics(
         parent_id=parent_id,
         t_ilqr=t_ilqr,
-        Q_res_npz=Q_res[:N_ilqr],
+        Q_res_npz=Q_res[:N_ilqr] if Q_res is not None else None,
         Q_res_stepmode=Q_res_stepmode,
         Q_res_windowed=Q_res_windowed,
         Q_cmd_naive=U_naive[:, 0],

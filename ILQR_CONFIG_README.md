@@ -32,8 +32,8 @@ python test_ilqr_test_set.py --ilqr_config my_experiment.json --max_iter 50
 # End-to-end pipeline validation:
 python test_ilqr_pipeline.py --n_samples 300
 
-# Full FFEC optimisation (requires input trajectory):
-python run_ffec.py --input_path dataset/LSTM_sim_samples/corner_4065_1000.npz
+# Deploy iLQR on an arbitrary trajectory:
+python run_ilqr_deploy.py --traj_npz dataset/LSTM_sim_samples/corner_4065_1000.npz
 ```
 
 ---
@@ -240,11 +240,15 @@ stay in the `argparse.Namespace` returned alongside the config):
 | Script | Extra arguments |
 |--------|-----------------|
 | `test_ilqr_test_set.py` | `--parents`, `--test_list`, `--dt_train` |
-| `run_ffec.py` | `--input_path`, `--output_path`, `--plot` |
 | `run_ilqr_deploy.py` | `--traj_npz`, `--out_dir`, `--dt_target`, `--validate` |
 | `test_ilqr_pipeline.py` | `--data_path` |
 | `validate_ilqr_windowed.py` | positional `controls_npz` |
 | `validate_modules.py` | `--tests`, `--data_path`, `--device` |
+
+> **Note on `run_ilqr_deploy.py` input:** `--traj_npz` accepts any `.npz` that contains
+> at least `time` and `Q_com`. `Q_vbn`, `Q_res`, and ground-truth keys
+> (`Q_sim`/`Q_exp`/`Q_tru`) are optional — if absent, the windowed LSTM reference
+> and ground-truth comparisons are skipped automatically.
 
 All scripts accept `--ilqr_config <path>` plus every shared flag listed in the
 tables above.  Run any script with `--help` to see the full list.
