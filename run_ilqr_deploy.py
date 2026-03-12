@@ -21,6 +21,11 @@ Usage::
         --w_delta_plus 2e-4 --w_delta_minus 4e-4 \\
         --validate --out_dir ilqr_deploy_results/
 
+    # With JSON config file
+    python run_ilqr_deploy.py \\
+        --traj_npz dataset/LSTM_sim_samples/corner_60100_1000.npz \\
+        --ilqr_config my_experiment.json --max_iter 50
+
 Outputs (in --out_dir)::
 
     <traj_name>_controls_G<G>_R<R>.npz    ← deploy artifact: optimized Q_cmd, w_cmd
@@ -42,11 +47,14 @@ The controls .npz contains:
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
+
+from ilqr_config import ILQRConfig, add_ilqr_args, load_config
 
 # ── Shared display scale ─────────────────────────────────────────────────────
 _SCALE    = 6e7        # m³/s → mL/min
@@ -56,72 +64,74 @@ _W_DEFAULT = 0.0029    # fallback bead width [m] if W_com absent in file
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[ILQRConfig, argparse.Namespace]:
+    """Parse CLI arguments with three-tier config precedence.
+
+    Returns ``(cfg, args)`` where *cfg* is the merged :class:`ILQRConfig`
+    and *args* holds script-specific values (``traj_npz``, ``dt_target``,
+    ``out_dir``, ``validate``).
+    """
     p = argparse.ArgumentParser(
         description="iLQR FFEC deployment for arbitrary trajectory files",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
-    # ── Trajectory input ──────────────────────────────────────────────────────
+    # -- Script-specific args (NOT part of ILQRConfig) -------------------
     p.add_argument("--traj_npz", required=True,
                    help="Path to any base trajectory .npz "
                         "(keys: time, Q_com, Q_vbn, Q_res, and Q_sim/Q_exp/Q_tru; "
                         "optionally W_com).")
     p.add_argument("--dt_target", type=float, default=_DT_TRAIN,
                    help="Target timestep after downsampling [s].")
-    p.add_argument("--n_samples", type=int, default=450,
-                   help="iLQR horizon length (number of steps at dt_target).")
-
-    # ── Checkpoint ────────────────────────────────────────────────────────────
-    grp = p.add_argument_group("Checkpoint")
-    grp.add_argument("--sweep_id",    default="mnywg829")
-    grp.add_argument("--ckpt_path",   default=None,
-                     help="Explicit .ckpt path (overrides --sweep_id).")
-    grp.add_argument("--config_path", default=None,
-                     help="JSON config (required with --ckpt_path).")
-    grp.add_argument("--train_list",  default="splits/train.txt",
-                     help="Training split file (for LSTM norm-stats).")
-    grp.add_argument("--data_folder", default="dataset/recursive_samples",
-                     help="Recursive samples folder (for LSTM norm-stats).")
-
-    # ── Physical model ────────────────────────────────────────────────────────
-    p.add_argument("--fluid",  default="fluid_DOW121")
-    p.add_argument("--mixer",  default="mixer_ISSM50nozzle")
-    p.add_argument("--pump",   default="pump_viscotec_outdated")
-
-    # ── iLQR hyper-params ─────────────────────────────────────────────────────
-    p.add_argument("--G",      type=float, default=1e15)
-    p.add_argument("--G_f",    type=float, default=None,
-                   help="Terminal tracking cost (defaults to --G).")
-    p.add_argument("--R_diag", nargs=2, type=float, default=[1e-3, 1e-3],
-                   metavar=("R_Q", "R_w"),
-                   help="Diagonal of control cost matrix [R_Q, R_w].")
-    p.add_argument("--max_iter", type=int, default=50)
-    p.add_argument("--tol",      type=float, default=1e-5)
-    p.add_argument("--eps_ode",  type=float, default=1e-5)
-    p.add_argument("--eps_ctrl", type=float, default=1e-7)
-
-    # ── Control bounds ────────────────────────────────────────────────────────
-    p.add_argument("--Q_min", type=float, default=0.0)
-    p.add_argument("--Q_max", type=float, default=1e-6)
-    p.add_argument("--w_min", type=float, default=0.0005)
-    p.add_argument("--w_max", type=float, default=0.005)
-    p.add_argument("--w_delta_plus",  type=float, default=None,
-                   help="Max bead width ABOVE W_com[k] [m]. E.g. 2e-4 (0.2 mm).")
-    p.add_argument("--w_delta_minus", type=float, default=None,
-                   help="Max bead width BELOW W_com[k] [m]. E.g. 4e-4 (0.4 mm).")
-
-    # ── Output / display ──────────────────────────────────────────────────────
     p.add_argument("--out_dir", default="ilqr_deploy_results",
                    help="Output directory for controls .npz + figures.")
-    p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
-    p.add_argument("--no_show", action="store_true",
-                   help="Skip plt.show().")
     p.add_argument("--validate", action="store_true",
                    help="After saving controls, run validate_ilqr_windowed.py "
                         "to check improvement via the original windowed pipeline.")
+    p.add_argument("--ilqr_config", default=None,
+                   help="Path to iLQR config JSON file. Overrides dataclass defaults; "
+                        "any CLI flags further override the JSON values.")
 
-    return p.parse_args()
+    # -- Shared iLQR args (default=SUPPRESS; merged by load_config) ------
+    add_ilqr_args(p)
+
+    raw = p.parse_args()
+    cfg = load_config(raw, ilqr_config_path=getattr(raw, "ilqr_config", None))
+    return cfg, raw
+
+
+# ── Checkpoint resolution ────────────────────────────────────────────────────
+
+def _resolve_checkpoint(ckpt_cfg):
+    """Return (ckpt_path, run_config) from CheckpointConfig."""
+    if ckpt_cfg.ckpt_path is not None:
+        ckpt_path = Path(ckpt_cfg.ckpt_path)
+        if not ckpt_path.exists():
+            sys.exit(f"Checkpoint not found: {ckpt_path}")
+        if ckpt_cfg.config_path is not None:
+            cfg_path = Path(ckpt_cfg.config_path)
+        else:
+            candidates = [Path("config.json"), ckpt_path.parent.parent / "config.json"]
+            cfg_path = next((c for c in candidates if c.exists()), None)
+            if cfg_path is None:
+                sys.exit("--ckpt_path given without --config_path; no config.json found.")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        if "huber_delta" not in cfg:
+            cfg["huber_delta"] = 1.0
+        from models.traj_WALR import DictToObject
+        return ckpt_path, DictToObject(cfg)
+    else:
+        print(f"  Resolving best checkpoint from WandB sweep '{ckpt_cfg.sweep_id}'...")
+        from models.traj_WALR import get_best_run
+        run_id, run_config = get_best_run(sweep_id=ckpt_cfg.sweep_id)
+        ckpt_dir = Path("VBN-modeling") / run_id / "checkpoints"
+        ckpt_files = sorted(ckpt_dir.glob("*.ckpt"))
+        if not ckpt_files:
+            sys.exit(f"No .ckpt files found in {ckpt_dir}")
+        ckpt_path = ckpt_files[-1]
+        print(f"  Checkpoint: {ckpt_path}")
+        return ckpt_path, run_config
 
 
 # ── Trajectory loading ────────────────────────────────────────────────────────
@@ -197,9 +207,9 @@ def main() -> None:
     import matplotlib.pyplot as plt
     import torch
 
-    args = _parse_args()
-    if args.G_f is None:
-        args.G_f = args.G
+    cfg, args = _parse_args()
+    if cfg.cost.G_f is None:
+        cfg.cost.G_f = cfg.cost.G
 
     traj_path = Path(args.traj_npz)
     if not traj_path.exists():
@@ -209,7 +219,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tag = f"G{args.G:.0e}_R{args.R_diag[0]:.0e}"
+    tag = f"G{cfg.cost.G:.0e}_R{cfg.cost.R_diag[0]:.0e}"
 
     # ── Load trajectory ───────────────────────────────────────────────────────
     _sep(f"Loading trajectory: {parent_id}")
@@ -222,51 +232,30 @@ def main() -> None:
     Q_tru       = traj["Q_tru"]
     W_com       = traj["W_com"]
 
-    N_ilqr = min(args.n_samples, N_full)
+    N_ilqr = min(cfg.run.n_samples, N_full)
     t_ilqr = t_full[:N_ilqr]
     print(f"\n  iLQR horizon: {N_ilqr} steps ({N_ilqr * dt:.2f} s)")
 
     # ── Checkpoint ────────────────────────────────────────────────────────────
     _sep("Checkpoint resolution")
-    # Reuse checkpoint resolution logic from test_ilqr_test_set
-    if args.ckpt_path is not None:
-        ckpt_path = Path(args.ckpt_path)
-        if args.config_path is not None:
-            import json
-            from types import SimpleNamespace
-            with open(args.config_path) as f:
-                run_config = SimpleNamespace(**json.load(f))
-        else:
-            candidates = [Path("config.json"), ckpt_path.parent.parent / "config.json"]
-            cfg_path = next((c for c in candidates if c.exists()), None)
-            if cfg_path is None:
-                sys.exit("--ckpt_path given without --config_path; no config.json found.")
-            import json
-            from types import SimpleNamespace
-            with open(cfg_path) as f:
-                run_config = SimpleNamespace(**json.load(f))
-    else:
-        print("  Querying WandB …")
-        from models.traj_WALR import get_best_run
-        run_id, run_config = get_best_run(sweep_id=args.sweep_id)
-        ckpt_dir = Path("VBN-modeling") / run_id / "checkpoints"
-        ckpt_path = sorted(ckpt_dir.glob("*.ckpt"))[-1].absolute()
+    ckpt_path, run_config = _resolve_checkpoint(cfg.checkpoint)
     print(f"  Checkpoint: {ckpt_path}")
     print(f"  num_layers={run_config.num_layers}  hidden_size={run_config.hidden_size}")
 
     # ── Initialise MATLAB bridge + LSTM ───────────────────────────────────────
     _sep("Initialising pipeline components")
     from matlab_bridge import MatlabBridge
-    bridge = MatlabBridge(fluid=args.fluid, mixer=args.mixer, pump=args.pump)
+    bridge = MatlabBridge(fluid=cfg.physics.fluid, mixer=cfg.physics.mixer,
+                          pump=cfg.physics.pump)
     bridge.start()
 
     from lstm_step import LSTMStepWrapper
     lstm = LSTMStepWrapper(
         ckpt_path=ckpt_path,
         run_config=run_config,
-        train_list_path=Path(args.train_list),
-        data_folder=Path(args.data_folder),
-        device=args.device,
+        train_list_path=cfg.data.train_list,
+        data_folder=cfg.data.data_folder,
+        device=cfg.display.device,
     )
 
     # ── Windowed LSTM reference (full trajectory) ─────────────────────────────
@@ -275,7 +264,7 @@ def main() -> None:
     Q_pred_windowed_full = _run_windowed_lstm(
         Q_com=Q_com, Q_vbn=Q_vbn, W_com=W_com,
         lstm=lstm, N=N_full, dt=dt,
-        window_len_s=4.5, window_step_s=0.1,
+        window_len_s=cfg.run.window_len_s, window_step_s=cfg.run.window_step_s,
     )
 
     # ── Hybrid dynamics naive rollout ─────────────────────────────────────────
@@ -291,38 +280,46 @@ def main() -> None:
     print(f"  Naive step-mode RMSE vs Q_com: {rmse_naive:.4f} mL/min")
 
     # ── Build control bounds ──────────────────────────────────────────────────
-    _use_rel = args.w_delta_plus is not None or args.w_delta_minus is not None
+    bnd = cfg.bounds
+    _use_rel = bnd.w_delta_plus is not None or bnd.w_delta_minus is not None
     if _use_rel:
-        dp = args.w_delta_plus  if args.w_delta_plus  is not None else np.inf
-        dm = args.w_delta_minus if args.w_delta_minus is not None else np.inf
-        w_lo = np.maximum(args.w_min, W_com[:N_ilqr] - dm)
-        w_hi = np.minimum(args.w_max, W_com[:N_ilqr] + dp)
-        u_min = np.column_stack([np.full(N_ilqr, args.Q_min), w_lo])  # [N, 2]
-        u_max = np.column_stack([np.full(N_ilqr, args.Q_max), w_hi])  # [N, 2]
+        dp = bnd.w_delta_plus  if bnd.w_delta_plus  is not None else np.inf
+        dm = bnd.w_delta_minus if bnd.w_delta_minus is not None else np.inf
+        w_lo = np.maximum(bnd.w_min, W_com[:N_ilqr] - dm)
+        w_hi = np.minimum(bnd.w_max, W_com[:N_ilqr] + dp)
+        u_min = np.column_stack([np.full(N_ilqr, bnd.Q_min), w_lo])  # [N, 2]
+        u_max = np.column_stack([np.full(N_ilqr, bnd.Q_max), w_hi])  # [N, 2]
         print(f"  Width bounds: ±[+{dp*1e3:.2f}, -{dm*1e3:.2f}] mm around W_com")
     else:
-        u_min = np.array([args.Q_min, args.w_min])
-        u_max = np.array([args.Q_max, args.w_max])
+        u_min = np.array([bnd.Q_min, bnd.w_min])
+        u_max = np.array([bnd.Q_max, bnd.w_max])
 
     # ── iLQR solve ────────────────────────────────────────────────────────────
     _sep(f"iLQR solve — {parent_id}")
-    print(f"  G={args.G:.2e}  G_f={args.G_f:.2e}  R=diag{args.R_diag}")
-    print(f"  max_iter={args.max_iter}  tol={args.tol}")
+    print(f"  G={cfg.cost.G:.2e}  G_f={cfg.cost.G_f:.2e}  R=diag{cfg.cost.R_diag}")
+    if cfg.cost.S_diag is not None:
+        print(f"  S = diag{cfg.cost.S_diag}  (soft rate penalty)")
+    print(f"  max_iter={cfg.solver.max_iter}  tol={cfg.solver.tol}")
     print(f"  Horizon: {N_ilqr} steps  (~{10 * N_ilqr} MATLAB calls/iter)")
 
-    R_mat = np.diag(args.R_diag)
+    R_mat = np.diag(cfg.cost.R_diag)
+    S_mat = np.diag(cfg.cost.S_diag) if cfg.cost.S_diag is not None else None
     q_ref = Q_com[:N_ilqr].copy()
 
     from ilqr import ILQRSolver
     solver = ILQRSolver(
         dynamics=dyn,
-        G=args.G,
+        G=cfg.cost.G,
         R=R_mat,
-        G_f=args.G_f,
-        max_iter=args.max_iter,
-        tol=args.tol,
-        eps_ode=args.eps_ode,
-        eps_ctrl=args.eps_ctrl,
+        G_f=cfg.cost.G_f,
+        S=S_mat,
+        max_iter=cfg.solver.max_iter,
+        tol=cfg.solver.tol,
+        eps_ode=cfg.solver.eps_ode,
+        eps_ctrl=cfg.solver.eps_ctrl,
+        eps_ctrl_rel=cfg.solver.eps_ctrl_rel,
+        eps_ctrl_floor_Q=cfg.solver.eps_ctrl_floor_Q,
+        eps_ctrl_floor_w=cfg.solver.eps_ctrl_floor_w,
         verbose=True,
     )
     U_opt, Q_out_iLQR, cost_hist = solver.solve(
@@ -408,7 +405,7 @@ def main() -> None:
     print(f"  Saved: {path_a.name}")
     print(f"  Saved: {path_b.name}")
 
-    if not args.no_show:
+    if not cfg.display.no_show:
         plt.show()
     else:
         plt.close("all")
@@ -421,15 +418,15 @@ def main() -> None:
             str(ctrl_path),
             "--save_dir", str(out_dir),
             "--no_show",
-            "--device", args.device,
+            "--device", cfg.display.device,
         ]
-        if args.ckpt_path:
+        if cfg.checkpoint.ckpt_path:
             val_cmd += ["--ckpt_path", str(ckpt_path)]
-            if args.config_path:
-                val_cmd += ["--config_path", args.config_path]
+            if cfg.checkpoint.config_path:
+                val_cmd += ["--config_path", cfg.checkpoint.config_path]
         else:
-            val_cmd += ["--sweep_id", args.sweep_id]
-        val_cmd += ["--data_folder", args.data_folder]
+            val_cmd += ["--sweep_id", cfg.checkpoint.sweep_id]
+        val_cmd += ["--data_folder", cfg.data.data_folder]
 
         print("  CMD:", " ".join(val_cmd))
         subprocess.run(val_cmd, check=False)
@@ -438,7 +435,7 @@ def main() -> None:
     _sep("Deploy summary")
     print(f"  Trajectory  : {parent_id}")
     print(f"  Horizon     : {N_ilqr} steps  ({N_ilqr * dt:.2f} s)")
-    print(f"  G={args.G:.1e}  R={args.R_diag[0]:.1e}  iters={len(cost_hist)}")
+    print(f"  G={cfg.cost.G:.1e}  R={cfg.cost.R_diag[0]:.1e}  iters={len(cost_hist)}")
     print(f"  Naive RMSE  : {rmse_naive:.4f} mL/min")
     print(f"  iLQR  RMSE  : {rmse_ilqr:.4f} mL/min")
     print(f"\n  Controls saved to: {ctrl_path.resolve()}")

@@ -62,6 +62,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from tqdm import tqdm
 
+from ilqr_config import ILQRConfig, add_ilqr_args, load_config
+
 # m³/s → mL/min
 _SCALE: float = 6e7
 # Target timestep matching LSTM training (LSTM_data_splitter downsample target)
@@ -84,135 +86,35 @@ _BASE_SEARCH_DIRS = [
 # CLI
 # ======================================================================
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[ILQRConfig, argparse.Namespace]:
+    """Parse CLI arguments with three-tier config precedence.
+
+    Returns ``(cfg, args)`` where *cfg* is the merged :class:`ILQRConfig`
+    and *args* holds script-specific values (``parents``, ``test_list``,
+    ``dt_train``).
+    """
     p = argparse.ArgumentParser(
         description="iLQR FFEC evaluation on test-set parent trajectories",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
+    # -- Script-specific args (NOT part of ILQRConfig) -------------------
     p.add_argument("--test_list", default="splits/test.txt",
                    help="Path to test split .txt listing windowed .npz filenames")
     p.add_argument("--parents", nargs="+", default=None,
                    help="Override: run only these parent IDs instead of all from test.txt")
-    p.add_argument("--n_samples", type=int, default=200,
-                   help="Number of timesteps for iLQR horizon (default 200 = 2 s at dt=0.01 s).")
     p.add_argument("--dt_train", type=float, default=_DT_TRAIN,
                    help="Target dt [s] for downsampling base trajectories (default 0.01 s).")
+    p.add_argument("--ilqr_config", default=None,
+                   help="Path to iLQR config JSON file. Overrides dataclass defaults; "
+                        "any CLI flags further override the JSON values.")
 
-    # Checkpoint
-    grp = p.add_argument_group("Checkpoint")
-    grp.add_argument("--sweep_id", default="mnywg829",
-                     help="WandB sweep ID for get_best_run() when --ckpt_path absent.")
-    grp.add_argument("--ckpt_path", default=None, help="Explicit .ckpt path.")
-    grp.add_argument("--config_path", default=None, help="JSON config (with --ckpt_path).")
+    # -- Shared iLQR args (default=SUPPRESS; merged by load_config) ------
+    add_ilqr_args(p)
 
-    # Norm stats
-    p.add_argument("--train_list", default="splits/train.txt")
-    p.add_argument("--data_folder", default="dataset/recursive_samples",
-                   help="Folder with training .npz files listed in splits/train.txt")
-
-    # Windowed LSTM
-    p.add_argument("--window_len_s", type=float, default=4.5,
-                   help="Window length [s] for windowed LSTM reference (default 4.5 s).")
-    p.add_argument("--window_step_s", type=float, default=0.1,
-                   help="Window step [s] for windowed LSTM reference (default 0.1 s).")
-
-    # Physical constants
-    p.add_argument("--fluid",  default="fluid_DOW121")
-    p.add_argument("--mixer",  default="mixer_ISSM50nozzle")
-    p.add_argument("--pump",   default="pump_viscotec_outdated")
-
-    # iLQR cost
-    p.add_argument("--G",    type=float, default=1e14)
-    p.add_argument("--G_f",  type=float, default=None,
-                   help="Terminal cost weight (default: same as --G)")
-    p.add_argument("--R_diag", nargs=2, type=float, default=[1e-3, 1e-3],
-                   metavar=("R_Q", "R_w"))
-    p.add_argument("--S_diag", nargs=2, type=float, default=None,
-                   metavar=("S_Q", "S_w"),
-                   help="Rate penalty diagonal [S_Q, S_w]. Penalises control rate of change: "
-                        "Σ (u[k]-u[k-1])^T diag(S) (u[k]-u[k-1]). "
-                        "Controls are in SI (Q_cmd~1e-8 m^3/s, w_cmd~3e-3 m) so S must be "
-                        "large to compete with tracking (G*e^2~1e-5 at G=1e15): "
-                        "S_Q ~ 1e16+ (dQ/step~1e-10), S_w ~ 1e8+ (dw/step~1e-5). "
-                        "Default: None.")
-
-    # iLQR solver
-    p.add_argument("--max_iter", type=int, default=10)
-    p.add_argument("--tol",      type=float, default=1e-4)
-    p.add_argument("--eps_ode",  type=float, default=1e-5)
-    p.add_argument("--eps_ctrl", type=float, default=1e-7,
-                   help="(legacy) Absolute FD perturbation for controls. Superseded by "
-                        "relative eps below.")
-    p.add_argument("--eps_ctrl_rel", type=float, default=1e-3,
-                   help="Relative FD perturbation for controls: eps = max(rel*|u|, floor). "
-                        "Default: 1e-3 (0.1%%).")
-    p.add_argument("--eps_ctrl_floor_Q", type=float, default=1e-12,
-                   help="Floor FD perturbation for Q_cmd [m^3/s]. Default: 1e-12.")
-    p.add_argument("--eps_ctrl_floor_w", type=float, default=1e-7,
-                   help="Floor FD perturbation for w_cmd [m]. Default: 1e-7.")
-    p.add_argument("--use_windowed_cost", action="store_true",
-                   help="Use windowed LSTM cost for iLQR (adjusts q_ref by windowed "
-                        "residual each iteration so the optimizer targets the deployed "
-                        "windowed pipeline). Requires no extra MATLAB calls.")
-    p.add_argument("--analytical_only", action="store_true",
-                   help="Run iLQR on the analytical ODE model only (no LSTM). "
-                        "Finds Q_cmd_opt such that Q_vbn(Q_cmd_opt) ≈ Q_com. "
-                        "The full windowed prediction is still run separately for "
-                        "display. Much faster (~30× fewer PyTorch calls/iter) and "
-                        "better-conditioned at long horizons.")
-
-    # Control bounds
-    p.add_argument("--Q_min", type=float, default=-9e-8)
-    p.add_argument("--Q_max", type=float, default=1e-7)
-    p.add_argument("--w_min", type=float, default=0.0007)
-    p.add_argument("--w_max", type=float, default=0.0029)
-    p.add_argument("--w_delta_plus",  type=float, default=0.0003,
-                   help="Max bead width ABOVE W_com[k] at each timestep [m]. "
-                        "E.g. 2e-4 (= 0.2 mm). Intersected with --w_max. "
-                        "None = no relative upper bound (only --w_max applies).")
-    p.add_argument("--w_delta_minus", type=float, default=0.0015,
-                   help="Max bead width BELOW W_com[k] at each timestep [m]. "
-                        "E.g. 4e-4 (= 0.4 mm). Intersected with --w_min. "
-                        "None = no relative lower bound (only --w_min applies).")
-    p.add_argument("--Q_delta_plus",  type=float, default=None,
-                   help="Max flow command ABOVE Q_com[k] at each timestep [m³/s]. "
-                        "E.g. 5e-9 (= 0.3 mL/min). Intersected with --Q_max. "
-                        "Prevents chattering: iLQR cannot push Q_cmd far above Q_com. "
-                        "None = no relative upper bound (only --Q_max applies).")
-    p.add_argument("--Q_delta_minus", type=float, default=None,
-                   help="Max flow command BELOW Q_com[k] at each timestep [m³/s]. "
-                        "E.g. 5e-9 (= 0.3 mL/min). Intersected with --Q_min. "
-                        "None = no relative lower bound (only --Q_min applies).")
-    p.add_argument("--segment_len", type=int, default=None,
-                   help="Split the iLQR horizon into sequential segments of this many steps. "
-                        "ODE state (theta, theta_dot, motor_pos) threads between segments; "
-                        "LSTM h,c resets to 0 at each segment start — matching the deployed "
-                        "windowed pipeline which also resets per 4.5s window. "
-                        "At dt=0.01s: --segment_len 450 = 4.5s segments, exactly one LSTM "
-                        "training window, so step-mode ≡ windowed pipeline per segment. "
-                        "Default: None = one segment (full N_ilqr horizon, current behaviour).")
-    p.add_argument("--w_rate_max", type=float, default=None,
-                   help="Max bead width change rate [mm/s]. E.g. 1.0 limits the nozzle to "
-                        "1 mm/s. Prevents bang-bang chattering of w_cmd by enforcing "
-                        "|w[k]-w[k-1]| <= w_rate_max * dt per step. "
-                        "Converted internally to m/step = w_rate_max * 1e-3 * dt. "
-                        "Default: None = no rate limit (only absolute/relative bounds apply).")
-    p.add_argument("--q_rate_max", type=float, default=None,
-                   help="Max flow rate change [mL/min/s]. E.g. 10.0 limits flow acceleration "
-                        "to 10 mL/min per second. Prevents Q_cmd chattering by enforcing "
-                        "|Q[k]-Q[k-1]| <= q_rate_max * dt per step. "
-                        "Converted internally to m³/s/step = q_rate_max * (1e-6/60) * dt. "
-                        "Default: None = no rate limit.")
-
-    p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
-    p.add_argument("--no_show", action="store_true",
-                   help="Skip plt.show() (non-interactive / batch runs)")
-    p.add_argument("--save_dir", default=None,
-                   help="Directory to save figures as PNG files (created if absent). "
-                        "Filenames: <parent_id>_{A,B}_G<G>_R<R>.png")
-
-    return p.parse_args()
+    raw = p.parse_args()
+    cfg = load_config(raw, ilqr_config_path=getattr(raw, "ilqr_config", None))
+    return cfg, raw
 
 
 # ======================================================================
@@ -225,14 +127,15 @@ def _sep(title: str, width: int = 62) -> None:
     print("=" * width)
 
 
-def _resolve_checkpoint(args: argparse.Namespace):
-    """Return (ckpt_path, run_config) from sweep_id or explicit paths."""
-    if args.ckpt_path is not None:
-        ckpt_path = Path(args.ckpt_path)
+def _resolve_checkpoint(ckpt_cfg):
+    """Return (ckpt_path, run_config) from CheckpointConfig."""
+    from ilqr_config import CheckpointConfig
+    if ckpt_cfg.ckpt_path is not None:
+        ckpt_path = Path(ckpt_cfg.ckpt_path)
         if not ckpt_path.exists():
             sys.exit(f"Checkpoint not found: {ckpt_path}")
-        if args.config_path is not None:
-            cfg_path = Path(args.config_path)
+        if ckpt_cfg.config_path is not None:
+            cfg_path = Path(ckpt_cfg.config_path)
         else:
             candidates = [Path("config.json"), ckpt_path.parent.parent / "config.json"]
             cfg_path = next((c for c in candidates if c.exists()), None)
@@ -245,9 +148,9 @@ def _resolve_checkpoint(args: argparse.Namespace):
         from models.traj_WALR import DictToObject
         return ckpt_path, DictToObject(cfg)
     else:
-        print(f"  Resolving best checkpoint from WandB sweep '{args.sweep_id}'...")
+        print(f"  Resolving best checkpoint from WandB sweep '{ckpt_cfg.sweep_id}'...")
         from models.traj_WALR import get_best_run
-        run_id, run_config = get_best_run(sweep_id=args.sweep_id)
+        run_id, run_config = get_best_run(sweep_id=ckpt_cfg.sweep_id)
         ckpt_dir = Path("VBN-modeling") / run_id / "checkpoints"
         ckpt_files = sorted(ckpt_dir.glob("*.ckpt"))
         if not ckpt_files:
@@ -622,16 +525,18 @@ def _print_summary_table(results: list[dict]) -> None:
 # ======================================================================
 
 def main() -> None:
-    args = _parse_args()
-    if args.G_f is None:
-        args.G_f = args.G
+    cfg, args = _parse_args()
+
+    # Apply G_f default (= G if not explicitly set)
+    if cfg.cost.G_f is None:
+        cfg.cost.G_f = cfg.cost.G
 
     repo_root = Path(__file__).resolve().parent
 
     # Output directory for figures (--save_dir)
     out_dir: Path | None = None
-    if args.save_dir is not None:
-        out_dir = Path(args.save_dir)
+    if cfg.display.save_dir is not None:
+        out_dir = Path(cfg.display.save_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Figures will be saved to: {out_dir.resolve()}")
 
@@ -655,7 +560,7 @@ def main() -> None:
     # Resolve checkpoint (once, shared across trajectories)
     # ------------------------------------------------------------------
     _sep("Checkpoint resolution")
-    ckpt_path, run_config = _resolve_checkpoint(args)
+    ckpt_path, run_config = _resolve_checkpoint(cfg.checkpoint)
     print(f"  num_layers  = {run_config.num_layers}")
     print(f"  hidden_size = {run_config.hidden_size}")
 
@@ -666,7 +571,8 @@ def main() -> None:
 
     print("  Starting MatlabBridge (persistent engine)...")
     from matlab_bridge import MatlabBridge
-    bridge = MatlabBridge(fluid=args.fluid, mixer=args.mixer, pump=args.pump)
+    bridge = MatlabBridge(fluid=cfg.physics.fluid, mixer=cfg.physics.mixer,
+                          pump=cfg.physics.pump)
     ER = bridge.extrusion_ratio
 
     print("  Initialising LSTMStepWrapper (computing norm stats from train split)...")
@@ -674,19 +580,19 @@ def main() -> None:
     lstm = LSTMStepWrapper(
         ckpt_path=ckpt_path,
         run_config=run_config,
-        train_list_path=args.train_list,
-        data_folder=args.data_folder,
-        device=args.device,
+        train_list_path=cfg.data.train_list,
+        data_folder=cfg.data.data_folder,
+        device=cfg.display.device,
     )
 
     from dynamics import HybridDynamics
 
     # iLQR cost / absolute bounds (shared across trajectories)
-    R_mat = np.diag(args.R_diag)
-    Q_min_abs, Q_max_abs = args.Q_min, args.Q_max
-    w_min_abs, w_max_abs = args.w_min, args.w_max
-    _use_rel_bounds = (args.w_delta_plus  is not None or args.w_delta_minus is not None or
-                       args.Q_delta_plus  is not None or args.Q_delta_minus is not None)
+    R_mat = np.diag(cfg.cost.R_diag)
+    Q_min_abs, Q_max_abs = cfg.bounds.Q_min, cfg.bounds.Q_max
+    w_min_abs, w_max_abs = cfg.bounds.w_min, cfg.bounds.w_max
+    _use_rel_bounds = (cfg.bounds.w_delta_plus  is not None or cfg.bounds.w_delta_minus is not None or
+                       cfg.bounds.Q_delta_plus  is not None or cfg.bounds.Q_delta_minus is not None)
 
     # Accumulate per-trajectory metrics for final summary table
     results: list[dict] = []
@@ -698,7 +604,7 @@ def main() -> None:
         _sep(f"Trajectory {parent_idx + 1} / {len(parents)}  —  {parent_id}")
 
         # ---- Load base trajectory ----------------------------------------
-        traj = _load_base(parent_id, repo_root, dt_target=args.dt_train)
+        traj = _load_base(parent_id, repo_root, dt_target=args.dt_train)  # script-specific
         t_full   = traj["t"]
         dt       = traj["dt"]
         N_full   = traj["N"]
@@ -708,7 +614,7 @@ def main() -> None:
         Q_tru    = traj["Q_tru"]
         W_com    = traj["W_com"]
 
-        N_ilqr = min(args.n_samples, N_full)
+        N_ilqr = min(cfg.run.n_samples, N_full)
         t_ilqr = t_full[:N_ilqr]
 
         print(f"\n  iLQR horizon: {N_ilqr} steps ({N_ilqr * dt:.2f} s)")
@@ -719,7 +625,7 @@ def main() -> None:
         Q_pred_windowed_full = _run_windowed_lstm(
             Q_com=Q_com, Q_vbn=Q_vbn, W_com=W_com,
             lstm=lstm, N=N_full, dt=dt,
-            window_len_s=args.window_len_s, window_step_s=args.window_step_s,
+            window_len_s=cfg.run.window_len_s, window_step_s=cfg.run.window_step_s,
         )
         rmse_win_full = (np.sqrt(np.mean((Q_pred_windowed_full - Q_tru) ** 2))
                          * _SCALE)
@@ -727,7 +633,7 @@ def main() -> None:
 
         # ---- HybridDynamics rollout (naive, iLQR horizon) -------------------
         dyn = HybridDynamics(bridge=bridge, lstm=lstm, dt=dt,
-                             use_lstm=not args.analytical_only)
+                             use_lstm=not cfg.run.analytical_only)
         state0 = dyn.make_initial_state(t0=float(t_full[0]))
 
         U_naive = np.stack([Q_com[:N_ilqr], W_com[:N_ilqr]], axis=1)  # [N_ilqr, 2]
@@ -758,15 +664,16 @@ def main() -> None:
         q_ref = Q_com[:N_ilqr].copy()
 
         # Build control bounds — time-varying if any relative deltas requested
+        bnd = cfg.bounds
         if _use_rel_bounds:
             # Width bounds
-            dp_w = args.w_delta_plus  if args.w_delta_plus  is not None else np.inf
-            dm_w = args.w_delta_minus if args.w_delta_minus is not None else np.inf
+            dp_w = bnd.w_delta_plus  if bnd.w_delta_plus  is not None else np.inf
+            dm_w = bnd.w_delta_minus if bnd.w_delta_minus is not None else np.inf
             w_lo = np.maximum(w_min_abs, W_com[:N_ilqr] - dm_w)  # [N_ilqr]
             w_hi = np.minimum(w_max_abs, W_com[:N_ilqr] + dp_w)  # [N_ilqr]
             # Flow bounds — relative to Q_com[k] to prevent chattering
-            dp_q = args.Q_delta_plus  if args.Q_delta_plus  is not None else np.inf
-            dm_q = args.Q_delta_minus if args.Q_delta_minus is not None else np.inf
+            dp_q = bnd.Q_delta_plus  if bnd.Q_delta_plus  is not None else np.inf
+            dm_q = bnd.Q_delta_minus if bnd.Q_delta_minus is not None else np.inf
             q_lo = np.maximum(Q_min_abs, Q_com[:N_ilqr] - dm_q)  # [N_ilqr]
             q_hi = np.minimum(Q_max_abs, Q_com[:N_ilqr] + dp_q)  # [N_ilqr]
             u_min = np.column_stack([q_lo, w_lo])  # [N, 2]
@@ -775,54 +682,54 @@ def main() -> None:
             u_min = np.array([Q_min_abs, w_min_abs])  # [2] constant
             u_max = np.array([Q_max_abs, w_max_abs])  # [2] constant
 
-        print(f"  G = {args.G:.2e},  G_f = {args.G_f:.2e},  R = diag{args.R_diag}")
-        if args.S_diag is not None:
-            print(f"  S = diag{args.S_diag}  (soft rate penalty)")
-        if args.S_diag is not None and (args.w_rate_max is not None or args.q_rate_max is not None):
+        print(f"  G = {cfg.cost.G:.2e},  G_f = {cfg.cost.G_f:.2e},  R = diag{cfg.cost.R_diag}")
+        if cfg.cost.S_diag is not None:
+            print(f"  S = diag{cfg.cost.S_diag}  (soft rate penalty)")
+        if cfg.cost.S_diag is not None and (bnd.w_rate_max is not None or bnd.q_rate_max is not None):
             print("  NOTE: Soft penalty (--S_diag) + hard rate limits both active. "
                   "Consider using only --S_diag for reliable convergence.")
-        if args.Q_delta_plus is not None or args.Q_delta_minus is not None:
-            dp_q_ml = args.Q_delta_plus  * 6e7 if args.Q_delta_plus  is not None else float("inf")
-            dm_q_ml = args.Q_delta_minus * 6e7 if args.Q_delta_minus is not None else float("inf")
+        if bnd.Q_delta_plus is not None or bnd.Q_delta_minus is not None:
+            dp_q_ml = bnd.Q_delta_plus  * 6e7 if bnd.Q_delta_plus  is not None else float("inf")
+            dm_q_ml = bnd.Q_delta_minus * 6e7 if bnd.Q_delta_minus is not None else float("inf")
             print(f"  Q bounds: Q_com[k] +{dp_q_ml:.3f}/-{dm_q_ml:.3f} mL/min  "
                   f"(clipped to [{Q_min_abs:.2e}, {Q_max_abs:.2e}] m³/s abs)")
         else:
             print(f"  Q bounds: [{Q_min_abs:.2e}, {Q_max_abs:.2e}] m³/s  (constant)")
-        if _use_rel_bounds and (args.w_delta_plus is not None or args.w_delta_minus is not None):
-            dp_mm = args.w_delta_plus  * 1e3 if args.w_delta_plus  is not None else float("inf")
-            dm_mm = args.w_delta_minus * 1e3 if args.w_delta_minus is not None else float("inf")
+        if _use_rel_bounds and (bnd.w_delta_plus is not None or bnd.w_delta_minus is not None):
+            dp_mm = bnd.w_delta_plus  * 1e3 if bnd.w_delta_plus  is not None else float("inf")
+            dm_mm = bnd.w_delta_minus * 1e3 if bnd.w_delta_minus is not None else float("inf")
             print(f"  w bounds: W_com[k] ± [{dp_mm:.2f}, {dm_mm:.2f}] mm  "
                   f"(clipped to [{w_min_abs*1e3:.1f}, {w_max_abs*1e3:.1f}] mm abs)")
         else:
             print(f"  w bounds: [{w_min_abs * 1e3:.1f}, {w_max_abs * 1e3:.1f}] mm  (constant)")
-        print(f"  max_iter = {args.max_iter},  tol = {args.tol}")
+        print(f"  max_iter = {cfg.solver.max_iter},  tol = {cfg.solver.tol}")
         print(f"  Starting iLQR solve  ({N_ilqr} steps, ~{10 * N_ilqr} MATLAB calls/iter)...")
 
         from ilqr import ILQRSolver
-        S_mat = np.diag(args.S_diag) if args.S_diag is not None else None
+        S_mat = np.diag(cfg.cost.S_diag) if cfg.cost.S_diag is not None else None
         solver = ILQRSolver(
             dynamics=dyn,
-            G=args.G,
+            G=cfg.cost.G,
             R=R_mat,
-            G_f=args.G_f,
+            G_f=cfg.cost.G_f,
             S=S_mat,
-            max_iter=args.max_iter,
-            tol=args.tol,
-            eps_ode=args.eps_ode,
-            eps_ctrl=args.eps_ctrl,
-            eps_ctrl_rel=args.eps_ctrl_rel,
-            eps_ctrl_floor_Q=args.eps_ctrl_floor_Q,
-            eps_ctrl_floor_w=args.eps_ctrl_floor_w,
+            max_iter=cfg.solver.max_iter,
+            tol=cfg.solver.tol,
+            eps_ode=cfg.solver.eps_ode,
+            eps_ctrl=cfg.solver.eps_ctrl,
+            eps_ctrl_rel=cfg.solver.eps_ctrl_rel,
+            eps_ctrl_floor_Q=cfg.solver.eps_ctrl_floor_Q,
+            eps_ctrl_floor_w=cfg.solver.eps_ctrl_floor_w,
             verbose=True,
         )
-        if args.use_windowed_cost:
+        if cfg.run.use_windowed_cost:
             print("  Mode: windowed cost iLQR (residual-adjusted reference)")
-        if args.analytical_only:
+        if cfg.run.analytical_only:
             print("  Mode: analytical-only iLQR (ODE only — no LSTM in inner loop)")
 
         # ---- Segment loop (default: one segment = existing single-solve behaviour) ----
         from dynamics import HybridState   # alongside existing HybridDynamics import
-        seg_len = args.segment_len or N_ilqr
+        seg_len = bnd.segment_len or N_ilqr
         n_segs  = math.ceil(N_ilqr / seg_len)
         if n_segs > 1:
             print(f"  Segmented iLQR: {n_segs} × {seg_len}-step segments  "
@@ -844,7 +751,7 @@ def main() -> None:
             # at the segment boundary naturally reflects processing from zero.
             # All segments can safely use hybrid mode.
             if n_segs > 1:
-                dyn.use_lstm = not args.analytical_only
+                dyn.use_lstm = not cfg.run.analytical_only
 
             if n_segs > 1:
                 mode_str = "hybrid" if dyn.use_lstm else "analytical-only"
@@ -871,11 +778,11 @@ def main() -> None:
                 q_ref=q_ref[s0:s1],
                 U_init=U_naive[s0:s1].copy(),
                 u_min=um, u_max=umx,
-                use_windowed_cost=args.use_windowed_cost,
-                dt=dt if args.use_windowed_cost else None,
-                w_rate_max=(args.w_rate_max * 1e-3 * dt if args.w_rate_max is not None
+                use_windowed_cost=cfg.run.use_windowed_cost,
+                dt=dt if cfg.run.use_windowed_cost else None,
+                w_rate_max=(bnd.w_rate_max * 1e-3 * dt if bnd.w_rate_max is not None
                             else None),
-                q_rate_max=(args.q_rate_max * (1e-6 / 60) * dt if args.q_rate_max is not None
+                q_rate_max=(bnd.q_rate_max * (1e-6 / 60) * dt if bnd.q_rate_max is not None
                             else None),
                 U_prefix=U_prefix,
                 state0_global=state0_global,
@@ -909,7 +816,7 @@ def main() -> None:
 
         # ---- Save controls to disk (for validate_ilqr_windowed.py / deploy) ----
         if out_dir is not None:
-            tag = f"G{args.G:.0e}_R{args.R_diag[0]:.0e}"
+            tag = f"G{cfg.cost.G:.0e}_R{cfg.cost.R_diag[0]:.0e}"
             ctrl_path = out_dir / f"{parent_id}_controls_{tag}.npz"
             np.savez(
                 ctrl_path,
@@ -960,7 +867,7 @@ def main() -> None:
 
         # Save figures to disk if --save_dir was given
         if out_dir is not None:
-            tag = f"G{args.G:.0e}_R{args.R_diag[0]:.0e}"
+            tag = f"G{cfg.cost.G:.0e}_R{cfg.cost.R_diag[0]:.0e}"
             path_a = out_dir / f"{parent_id}_A_{tag}.png"
             path_b = out_dir / f"{parent_id}_B_{tag}.png"
             fig_a.savefig(path_a, dpi=150, bbox_inches="tight")
@@ -977,7 +884,7 @@ def main() -> None:
 
     _print_summary_table(results)
 
-    if not args.no_show:
+    if not cfg.display.no_show:
         plt.show()
 
     print("\n  Done.")

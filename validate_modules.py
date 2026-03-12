@@ -38,6 +38,8 @@ from pathlib import Path
 
 import numpy as np
 
+from ilqr_config import ILQRConfig, add_ilqr_args, load_config
+
 # ======================================================================
 # ANSI colour helpers
 # ======================================================================
@@ -456,11 +458,19 @@ class _DictObj:
             setattr(self, k, v)
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[ILQRConfig, argparse.Namespace]:
+    """Parse CLI arguments with three-tier config precedence.
+
+    Returns ``(cfg, args)`` where *cfg* is the merged :class:`ILQRConfig`
+    and *args* holds script-specific values (``tests``, ``data_path``,
+    ``device``).
+    """
     p = argparse.ArgumentParser(
         description="Validation tests for matlab_bridge / lstm_step / ilqr modules",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+    # -- Script-specific args (NOT part of ILQRConfig) ---------------------
     p.add_argument(
         "--tests", default="all",
         help="Comma-separated list of tests to run: '1', '2', '3', or 'all' (default: all)"
@@ -470,42 +480,24 @@ def _parse_args() -> argparse.Namespace:
         default="dataset/LSTM_sim_samples/corner_4065_1000.npz",
         help="Path to .npz file for tests 1 and 2"
     )
-    p.add_argument(
-        "--ckpt_path", default=None,
-        help="Checkpoint .ckpt path (required for test 2)"
-    )
-    p.add_argument(
-        "--config_path", default=None,
-        help="JSON config path (required for test 2). "
-             "Fields: hidden_size, num_layers, lr [, huber_delta]"
-    )
-    p.add_argument(
-        "--train_list", default="splits/train.txt",
-        help="Train split .txt path (for norm stats in test 2)"
-    )
-    p.add_argument(
-        "--data_folder", default="dataset/recursive_samples",
-        help="Folder with training .npz files (for norm stats in test 2). "
-             "Must contain all files listed in splits/train.txt "
-             "(dataset/recursive_samples/, NOT dataset/LSTM_sim_samples/)."
-    )
-    p.add_argument(
-        "--w_nom", type=float, default=0.0029,
-        help="Nominal bead width [m] (default 0.0029 m = 2.9 mm)"
-    )
-    p.add_argument(
-        "--n_samples", type=int, default=None,
-        help="If given, use only first N timesteps in tests 1 and 2 (for speed)"
-    )
-    p.add_argument(
-        "--device", default="cpu", choices=["cpu", "cuda", "mps"],
-        help="PyTorch device for test 2"
-    )
-    return p.parse_args()
+    # p.add_argument(
+    #     "--device", default="cpu", choices=["cpu", "cuda", "mps"],
+    #     help="PyTorch device for test 2"
+    # )
+    p.add_argument("--ilqr_config", default=None,
+                   help="Path to iLQR config JSON file. Overrides dataclass defaults; "
+                        "any CLI flags further override the JSON values.")
+
+    # -- Shared iLQR args (default=SUPPRESS; merged by load_config) --------
+    add_ilqr_args(p)
+
+    raw = p.parse_args()
+    cfg = load_config(raw, ilqr_config_path=getattr(raw, "ilqr_config", None))
+    return cfg, raw
 
 
 def main() -> None:
-    args = _parse_args()
+    cfg, args = _parse_args()
 
     # Parse test selection
     if args.tests.strip().lower() == "all":
@@ -526,7 +518,7 @@ def main() -> None:
             _skip("data_path not found")
         else:
             try:
-                results[1] = test1_matlab_bridge(data_path, args.w_nom, args.n_samples)
+                results[1] = test1_matlab_bridge(data_path, cfg.physics.w_nom, cfg.run.n_samples)
             except Exception as exc:
                 print(f"[Test 1] Unexpected error: {exc}")
                 traceback.print_exc()
@@ -534,27 +526,27 @@ def main() -> None:
 
     # ---- Test 2
     if 2 in run_tests:
-        if args.ckpt_path is None or args.config_path is None:
+        if cfg.checkpoint.ckpt_path is None or cfg.checkpoint.config_path is None:
             _header("Test 2: LSTMStepWrapper.step() vs WalrLSTM batch forward pass")
             _skip("--ckpt_path and --config_path required for Test 2")
         elif not data_path.exists():
             _header("Test 2: LSTMStepWrapper.step() vs WalrLSTM batch forward pass")
             _skip(f"data_path not found: {data_path}")
         else:
-            with open(args.config_path) as f:
-                cfg = json.load(f)
-            if "huber_delta" not in cfg:
-                cfg["huber_delta"] = 1.0
-            run_config = _DictObj(cfg)
+            with open(cfg.checkpoint.config_path) as f:
+                model_cfg = json.load(f)
+            if "huber_delta" not in model_cfg:
+                model_cfg["huber_delta"] = 1.0
+            run_config = _DictObj(model_cfg)
             try:
                 results[2] = test2_lstm_step(
                     data_path=data_path,
-                    ckpt_path=Path(args.ckpt_path),
+                    ckpt_path=Path(cfg.checkpoint.ckpt_path),
                     run_config=run_config,
-                    train_list=Path(args.train_list),
-                    data_folder=Path(args.data_folder),
-                    w_nom=args.w_nom,
-                    n_samples=args.n_samples,
+                    train_list=Path(cfg.data.train_list),
+                    data_folder=Path(cfg.data.data_folder),
+                    w_nom=cfg.physics.w_nom,
+                    n_samples=cfg.run.n_samples,
                     device=args.device,
                 )
             except Exception as exc:

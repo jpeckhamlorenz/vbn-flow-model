@@ -1,0 +1,64 @@
+{
+  "checkpoint": {
+    "sweep_id": "mnywg829",
+    "ckpt_path": null,
+    "config_path": null
+  },
+  "data": {
+    "train_list": "splits/train.txt",
+    "data_folder": "dataset/recursive_samples"
+  },
+  "physics": {
+    "fluid": "fluid_DOW121",
+    "mixer": "mixer_ISSM50nozzle",
+    "pump": "pump_viscotec_outdated",
+    "w_nom": 0.0029,
+    "dt": 0.01
+  },
+  "cost": {
+    "G": 1000000000000000.0,
+    "G_f": null,
+    "R_diag": [
+      10000000000.0,
+      100.0
+    ],
+    "S_diag": [
+      1000000000000.0,
+      100000.0
+    ]
+  },
+  "solver": {
+    "max_iter": 200,
+    "tol": 0.0001,
+    "eps_ode": 1e-05,
+    "eps_ctrl": 1e-07,
+    "eps_ctrl_rel": 0.001,
+    "eps_ctrl_floor_Q": 1e-12,
+    "eps_ctrl_floor_w": 1e-07
+  },
+  "bounds": {
+    "Q_min": -9e-08,
+    "Q_max": 1e-07,
+    "w_min": 0.0007,
+    "w_max": 0.0029,
+    "w_delta_plus": 0.0003,
+    "w_delta_minus": 0.0015,
+    "Q_delta_plus": null,
+    "Q_delta_minus": null,
+    "w_rate_max": null,
+    "q_rate_max": null,
+    "segment_len": 450
+  },
+  "run": {
+    "n_samples": 1350,
+    "window_len_s": 4.5,
+    "window_step_s": 0.1,
+    "use_windowed_cost": false,
+    "analytical_only": false
+  },
+  "display": {
+    "device": "cpu",
+    "no_show": false,
+    "save_dir": "sweep_results_multiseg"
+  }
+}

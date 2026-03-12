@@ -43,6 +43,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from ilqr_config import ILQRConfig, add_ilqr_args, load_config
+
 # ── Scale factor for display ─────────────────────────────────────────────────
 _SCALE = 1e6 * 60.0 / 1e3          # m³/s → mL/min   (×1e9 gives nL/s; /1e3×60 = mL/min)
 # Correct conversion: 1 m³/s = 1e6 cm³/s = 1e6 mL/s = 6e7 mL/min
@@ -54,42 +56,40 @@ _SCALE = 6e7   # m³/s → mL/min  (= 1e9 nL/s × 60 s/min / 1e3 nL/mL)
 
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[ILQRConfig, argparse.Namespace]:
+    """Parse CLI with three-tier config precedence.
+
+    Returns ``(cfg, args)`` where *args.controls_npz* is the positional
+    script-specific argument.
+    """
     p = argparse.ArgumentParser(
         description="Validate iLQR controls via original windowed LSTM pipeline",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    # Script-specific
     p.add_argument(
         "controls_npz",
         help="Path to *_controls_*.npz saved by test_ilqr_test_set.py --save_dir",
     )
+    p.add_argument("--ilqr_config", default=None,
+                   help="Path to iLQR config JSON file.")
 
-    grp = p.add_argument_group("Checkpoint")
-    grp.add_argument("--sweep_id",   default="mnywg829",
-                     help="WandB sweep ID to resolve best checkpoint.")
-    grp.add_argument("--ckpt_path",  default=None,
-                     help="Explicit .ckpt path (overrides --sweep_id).")
-    grp.add_argument("--config_path", default=None,
-                     help="JSON config path (required when using --ckpt_path).")
+    # Shared iLQR args (default=SUPPRESS)
+    add_ilqr_args(p)
 
-    p.add_argument("--data_folder", default="dataset/recursive_samples",
-                   help="DataModule data folder (for norm_stats computation).")
-    p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"])
-    p.add_argument("--no_show", action="store_true",
-                   help="Skip plt.show().")
-    p.add_argument("--save_dir", default=None,
-                   help="Directory to save the validation PNG (created if absent).")
-    return p.parse_args()
+    raw = p.parse_args()
+    cfg = load_config(raw, ilqr_config_path=getattr(raw, "ilqr_config", None))
+    return cfg, raw
 
 
 # ── Checkpoint resolution ─────────────────────────────────────────────────────
 
-def _resolve_checkpoint(args: argparse.Namespace):
-    """Return (ckpt_path, run_config). Mirrors test_ilqr_test_set._resolve_checkpoint."""
-    if args.ckpt_path is not None:
-        ckpt_path = Path(args.ckpt_path)
-        if args.config_path is not None:
-            cfg_path = Path(args.config_path)
+def _resolve_checkpoint(ckpt_cfg):
+    """Return (ckpt_path, run_config) from CheckpointConfig."""
+    if ckpt_cfg.ckpt_path is not None:
+        ckpt_path = Path(ckpt_cfg.ckpt_path)
+        if ckpt_cfg.config_path is not None:
+            cfg_path = Path(ckpt_cfg.config_path)
         else:
             candidates = [Path("config.json"), ckpt_path.parent.parent / "config.json"]
             cfg_path = next((c for c in candidates if c.exists()), None)
@@ -104,7 +104,7 @@ def _resolve_checkpoint(args: argparse.Namespace):
 
     print("  Querying WandB for best run in sweep …")
     from models.traj_WALR import get_best_run
-    run_id, run_config = get_best_run(sweep_id=args.sweep_id)
+    run_id, run_config = get_best_run(sweep_id=ckpt_cfg.sweep_id)
     ckpt_dir = Path("VBN-modeling") / run_id / "checkpoints"
     ckpt_files = sorted(ckpt_dir.glob("*.ckpt"))
     if not ckpt_files:
@@ -166,7 +166,7 @@ def _plot_validation(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    args = _parse_args()
+    cfg, args = _parse_args()
 
     ctrl_path = Path(args.controls_npz)
     if not ctrl_path.exists():
@@ -192,13 +192,13 @@ def main() -> None:
 
     # ── 2. Resolve checkpoint + norm_stats ───────────────────────────────────
     print("\n  Resolving checkpoint …")
-    ckpt_path, run_config = _resolve_checkpoint(args)
+    ckpt_path, run_config = _resolve_checkpoint(cfg.checkpoint)
     print(f"  num_layers  = {run_config.num_layers}")
     print(f"  hidden_size = {run_config.hidden_size}")
 
     print("\n  Loading DataModule for norm_stats …")
     from models.traj_WALR import DataModule
-    dm = DataModule(run_config, data_folderpath=Path(args.data_folder))
+    dm = DataModule(run_config, data_folderpath=Path(cfg.data.data_folder))
     dm.setup("fit")
     norm_stats = dm.norm_stats
 
@@ -215,7 +215,7 @@ def main() -> None:
         run_config  = run_config,
         norm_stats  = norm_stats,
         bead_units  = "m",
-        device_type = args.device,
+        device_type = cfg.display.device,
     )
     print("  Naive windowed pipeline: done.")
 
@@ -231,7 +231,7 @@ def main() -> None:
         run_config  = run_config,
         norm_stats  = norm_stats,
         bead_units  = "m",
-        device_type = args.device,
+        device_type = cfg.display.device,
     )
     print("  Optimized windowed pipeline: done.")
 
@@ -279,15 +279,15 @@ def main() -> None:
         parent_id=parent_id,
     )
 
-    if args.save_dir is not None:
-        out_dir = Path(args.save_dir)
+    if cfg.display.save_dir is not None:
+        out_dir = Path(cfg.display.save_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = ctrl_path.stem.replace("_controls_", "_windowed_val_")
         png_path = out_dir / f"{stem}.png"
         fig.savefig(png_path, dpi=150, bbox_inches="tight")
         print(f"  Saved figure: {png_path}")
 
-    if not args.no_show:
+    if not cfg.display.no_show:
         plt.show()
 
         plt.figure()

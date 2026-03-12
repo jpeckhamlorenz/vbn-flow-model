@@ -46,101 +46,79 @@ from pathlib import Path
 
 import numpy as np
 
+from ilqr_config import ILQRConfig, add_ilqr_args, load_config
+
 
 # ======================================================================
 # Argument parsing
 # ======================================================================
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args() -> tuple[ILQRConfig, argparse.Namespace]:
+    """Parse CLI arguments with three-tier config precedence.
+
+    Returns ``(cfg, args)`` where *cfg* is the merged :class:`ILQRConfig`
+    and *args* holds script-specific values (``input_path``, ``output_path``,
+    ``plot``).
+    """
     p = argparse.ArgumentParser(
         description="iLQR FFEC: find optimal [Q_cmd, w_cmd] to track q_ref"
     )
 
-    # Model
-    p.add_argument("--ckpt_path", required=True, type=str,
-                   help="Path to .ckpt checkpoint file")
-    p.add_argument("--config_path", required=True, type=str,
-                   help="Path to JSON file with run_config fields "
-                        "(hidden_size, num_layers, lr, huber_delta)")
-
-    # Data
+    # -- Script-specific args (NOT part of ILQRConfig) -------------------
     p.add_argument("--input_path", required=True, type=str,
                    help="Path to .npz file containing the reference trajectory. "
                         "Must contain Q_com (used as q_ref) and time vector.")
-    p.add_argument("--train_list", default="splits/train.txt", type=str,
-                   help="Path to train split .txt file (for norm stats)")
-    p.add_argument("--data_folder", default="dataset/recursive_samples", type=str,
-                   help="Folder containing training .npz files "
-                        "(must contain all files listed in splits/train.txt)")
-
-    # Output
     p.add_argument("--output_path", default="outputs/ffec_result.npz", type=str,
                    help="Output .npz path (will confirm before writing)")
-
-    # Cost weights
-    p.add_argument("--G", type=float, default=1e18,
-                   help="Tracking cost weight G (scalar)")
-    p.add_argument("--R_diag", nargs=2, type=float, default=[1e-3, 1e-3],
-                   metavar=("R_Q", "R_w"),
-                   help="Diagonal of R matrix [R_Q_cmd, R_w_cmd]")
-    p.add_argument("--G_f", type=float, default=1e18,
-                   help="Terminal tracking cost weight")
-
-    # Dynamics
-    p.add_argument("--dt", type=float, default=0.01,
-                   help="Timestep [s] (should match data sampling rate)")
-    p.add_argument("--w_nom", type=float, default=0.0029,
-                   help="Nominal bead width [m] for initial control guess")
-    p.add_argument("--fluid", default="fluid_DOW121")
-    p.add_argument("--mixer", default="mixer_ISSM50nozzle")
-    p.add_argument("--pump", default="pump_viscotec_outdated")
-
-    # Control bounds
-    p.add_argument("--Q_min", type=float, default=0.0,
-                   help="Minimum Q_cmd [m³/s]")
-    p.add_argument("--Q_max", type=float, default=1e-6,
-                   help="Maximum Q_cmd [m³/s]")
-    p.add_argument("--w_min", type=float, default=0.0005,
-                   help="Minimum w_cmd [m]")
-    p.add_argument("--w_max", type=float, default=0.005,
-                   help="Maximum w_cmd [m]")
-
-    # iLQR
-    p.add_argument("--max_iter", type=int, default=30,
-                   help="Maximum iLQR iterations")
-    p.add_argument("--tol", type=float, default=1e-4,
-                   help="Relative cost tolerance for convergence")
-
-    # FD perturbation
-    p.add_argument("--eps_ode", type=float, default=1e-5,
-                   help="FD perturbation for ODE state dims")
-    p.add_argument("--eps_ctrl", type=float, default=1e-7,
-                   help="(legacy) Absolute FD perturbation for controls")
-    p.add_argument("--eps_ctrl_rel", type=float, default=1e-3,
-                   help="Relative FD perturbation for controls (default: 1e-3)")
-    p.add_argument("--eps_ctrl_floor_Q", type=float, default=1e-12,
-                   help="Floor FD perturbation for Q_cmd [m^3/s]")
-    p.add_argument("--eps_ctrl_floor_w", type=float, default=1e-7,
-                   help="Floor FD perturbation for w_cmd [m]")
-
-    # Misc
-    p.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps"],
-                   help="PyTorch device for LSTM")
     p.add_argument("--plot", action="store_true",
                    help="Show matplotlib plot after optimisation")
+    p.add_argument("--ilqr_config", default=None,
+                   help="Path to iLQR config JSON file. Overrides dataclass defaults; "
+                        "any CLI flags further override the JSON values.")
 
-    return p.parse_args()
+    # -- Shared iLQR args (default=SUPPRESS; merged by load_config) ------
+    add_ilqr_args(p)
+
+    raw = p.parse_args()
+    cfg = load_config(raw, ilqr_config_path=getattr(raw, "ilqr_config", None))
+    return cfg, raw
 
 
 # ======================================================================
-# Helper: load config from JSON
+# Helper: resolve checkpoint from CheckpointConfig
 # ======================================================================
 
-class _DictObj:
-    """Convert a dict to an attribute-access object (mirrors DictToObject in traj_WALR.py)."""
-    def __init__(self, d: dict):
-        for k, v in d.items():
-            setattr(self, k, v)
+def _resolve_checkpoint(ckpt_cfg):
+    """Return (ckpt_path, run_config) from CheckpointConfig."""
+    from ilqr_config import CheckpointConfig
+    if ckpt_cfg.ckpt_path is not None:
+        ckpt_path = Path(ckpt_cfg.ckpt_path)
+        if not ckpt_path.exists():
+            sys.exit(f"Checkpoint not found: {ckpt_path}")
+        if ckpt_cfg.config_path is not None:
+            cfg_path = Path(ckpt_cfg.config_path)
+        else:
+            candidates = [Path("config.json"), ckpt_path.parent.parent / "config.json"]
+            cfg_path = next((c for c in candidates if c.exists()), None)
+            if cfg_path is None:
+                sys.exit("--ckpt_path given without --config_path; no config.json found.")
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        if "huber_delta" not in cfg:
+            cfg["huber_delta"] = 1.0
+        from models.traj_WALR import DictToObject
+        return ckpt_path, DictToObject(cfg)
+    else:
+        print(f"  Resolving best checkpoint from WandB sweep '{ckpt_cfg.sweep_id}'...")
+        from models.traj_WALR import get_best_run
+        run_id, run_config = get_best_run(sweep_id=ckpt_cfg.sweep_id)
+        ckpt_dir = Path("VBN-modeling") / run_id / "checkpoints"
+        ckpts = sorted(ckpt_dir.glob("epoch=*.ckpt"))
+        if not ckpts:
+            sys.exit(f"No checkpoints found in {ckpt_dir}")
+        ckpt_path = ckpts[-1]
+        print(f"  Using checkpoint: {ckpt_path}")
+        return ckpt_path, run_config
 
 
 # ======================================================================
@@ -148,18 +126,10 @@ class _DictObj:
 # ======================================================================
 
 def main() -> None:
-    args = _parse_args()
+    cfg, args = _parse_args()
 
-    # ---- Load run_config
-    with open(args.config_path) as f:
-        cfg_dict = json.load(f)
-    # Ensure required fields present
-    for field in ("hidden_size", "num_layers", "lr"):
-        if field not in cfg_dict:
-            sys.exit(f"config_path JSON is missing required field: '{field}'")
-    if "huber_delta" not in cfg_dict:
-        cfg_dict["huber_delta"] = 1.0
-    run_config = _DictObj(cfg_dict)
+    # ---- Resolve checkpoint
+    ckpt_path, run_config = _resolve_checkpoint(cfg.checkpoint)
 
     # ---- Load input trajectory
     data = np.load(args.input_path)
@@ -168,7 +138,7 @@ def main() -> None:
 
     q_ref = data["Q_com"].ravel().astype(np.float64)  # [m³/s] — use Q_com as reference
     T = len(q_ref)
-    dt = args.dt
+    dt = cfg.physics.dt
     t_vec = np.arange(T) * dt
 
     print(f"Input trajectory: T={T} timesteps, dt={dt}s")
@@ -176,29 +146,33 @@ def main() -> None:
 
     # ---- Initial control guess: Q_cmd = q_ref, w_cmd = nominal
     Q_cmd_init = q_ref.copy()
-    w_cmd_init = np.full(T, args.w_nom)
+    w_cmd_init = np.full(T, cfg.physics.w_nom)
     U_init = np.stack([Q_cmd_init, w_cmd_init], axis=1)  # [T, 2]
 
     # ---- Cost matrices
-    R = np.diag(args.R_diag)
+    R = np.diag(cfg.cost.R_diag)
 
     # ---- Control bounds
-    u_min = np.array([args.Q_min, args.w_min])
-    u_max = np.array([args.Q_max, args.w_max])
+    u_min = np.array([cfg.bounds.Q_min, cfg.bounds.w_min])
+    u_max = np.array([cfg.bounds.Q_max, cfg.bounds.w_max])
 
     # ---- Initialise dynamics (this starts MATLAB engine)
     print("\nInitialising MatlabBridge...")
     from matlab_bridge import MatlabBridge
-    bridge = MatlabBridge(fluid=args.fluid, mixer=args.mixer, pump=args.pump)
+    bridge = MatlabBridge(
+        fluid=cfg.physics.fluid,
+        mixer=cfg.physics.mixer,
+        pump=cfg.physics.pump,
+    )
 
     print("Initialising LSTMStepWrapper...")
     from lstm_step import LSTMStepWrapper
     lstm = LSTMStepWrapper(
-        ckpt_path=args.ckpt_path,
+        ckpt_path=ckpt_path,
         run_config=run_config,
-        train_list_path=args.train_list,
-        data_folder=args.data_folder,
-        device=args.device,
+        train_list_path=cfg.data.train_list,
+        data_folder=cfg.data.data_folder,
+        device=cfg.display.device,
     )
 
     from dynamics import HybridDynamics
@@ -209,7 +183,7 @@ def main() -> None:
     state0 = dyn.make_initial_state(t0=0.0)
     _, Q_out_init = dyn.rollout(state0, U_init)
     cost_init = sum(
-        args.G * (Q_out_init[k] - q_ref[k]) ** 2
+        cfg.cost.G * (Q_out_init[k] - q_ref[k]) ** 2
         + U_init[k] @ R @ U_init[k]
         for k in range(T)
     )
@@ -221,16 +195,16 @@ def main() -> None:
     from ilqr import ILQRSolver
     solver = ILQRSolver(
         dynamics=dyn,
-        G=args.G,
+        G=cfg.cost.G,
         R=R,
-        G_f=args.G_f,
-        max_iter=args.max_iter,
-        tol=args.tol,
-        eps_ode=args.eps_ode,
-        eps_ctrl=args.eps_ctrl,
-        eps_ctrl_rel=args.eps_ctrl_rel,
-        eps_ctrl_floor_Q=args.eps_ctrl_floor_Q,
-        eps_ctrl_floor_w=args.eps_ctrl_floor_w,
+        G_f=cfg.cost.G_f,
+        max_iter=cfg.solver.max_iter,
+        tol=cfg.solver.tol,
+        eps_ode=cfg.solver.eps_ode,
+        eps_ctrl=cfg.solver.eps_ctrl,
+        eps_ctrl_rel=cfg.solver.eps_ctrl_rel,
+        eps_ctrl_floor_Q=cfg.solver.eps_ctrl_floor_Q,
+        eps_ctrl_floor_w=cfg.solver.eps_ctrl_floor_w,
         verbose=True,
     )
 
