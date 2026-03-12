@@ -60,6 +60,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from tqdm import tqdm
 
 # m³/s → mL/min
 _SCALE: float = 6e7
@@ -162,8 +163,8 @@ def _parse_args() -> argparse.Namespace:
                         "better-conditioned at long horizons.")
 
     # Control bounds
-    p.add_argument("--Q_min", type=float, default=-1e-7)
-    p.add_argument("--Q_max", type=float, default=1e-6)
+    p.add_argument("--Q_min", type=float, default=-9e-8)
+    p.add_argument("--Q_max", type=float, default=1e-7)
     p.add_argument("--w_min", type=float, default=0.0007)
     p.add_argument("--w_max", type=float, default=0.0029)
     p.add_argument("--w_delta_plus",  type=float, default=0.0003,
@@ -832,7 +833,9 @@ def main() -> None:
         cost_hist  = []
         state_curr = state0
 
-        for s_idx in range(n_segs):
+        seg_iter = (tqdm(range(n_segs), desc="Segments", leave=True)
+                   if n_segs > 1 else range(n_segs))
+        for s_idx in seg_iter:
             s0 = s_idx * seg_len
             s1 = min(s0 + seg_len, N_ilqr)
 

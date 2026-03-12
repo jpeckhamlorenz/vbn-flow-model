@@ -35,6 +35,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.func
+from tqdm import tqdm
 
 from dynamics import HybridDynamics, HybridState
 from cost import (stage_derivatives, terminal_derivatives, stage_cost, terminal_cost,
@@ -613,10 +614,10 @@ class ILQRSolver:
                 print(f"  WARNING: tracking/control ratio Q={ratio_Q:.1e} w={ratio_w:.1e}  "
                       f"— R may be too small to affect optimization")
 
-        for it in range(self.max_iter):
+        pbar = tqdm(range(self.max_iter), desc="iLQR",
+                   disable=not self.verbose, leave=True)
+        for it in pbar:
             # ---- Linearize
-            if self.verbose:
-                print(f"iLQR iter {it + 1}/{self.max_iter}: linearizing...")
 
             As, Bs, dq_dxs, dq_dus = self._linearize_trajectory(states, U, T)
 
@@ -683,19 +684,16 @@ class ILQRSolver:
             cost = cost_new
             cost_hist.append(cost)
 
-            if self.verbose:
-                print(
-                    f"  cost = {cost:.6e}  alpha = {alpha:.3f}  "
-                    f"rel_change = {rel_change:.2e}  lam = {lam:.2e}"
-                )
+            pbar.set_postfix(cost=f"{cost:.3e}", alpha=f"{alpha:.3f}",
+                            rel=f"{rel_change:.1e}", lam=f"{lam:.1e}")
 
             if rel_change < self.tol:
-                if self.verbose:
-                    print(f"iLQR converged in {it + 1} iterations.")
+                pbar.set_description(f"iLQR converged ({it + 1} iters)")
+                pbar.close()
                 break
         else:
-            if self.verbose:
-                print("iLQR: reached max_iter without convergence.")
+            pbar.set_description("iLQR max_iter reached")
+            pbar.close()
 
         # Final output: windowed prediction if use_windowed_cost, else step-mode
         if use_windowed_cost:
