@@ -88,7 +88,12 @@ vbn-flow-model/
 ├── inputs/
 │   ├── corner_naive.py
 │   ├── pathgen.py
-│   └── twostep.py
+│   ├── twostep.py
+│   └── vbn_pathgen.py              # Print trajectory generator for arbitrary toolpaths
+│
+│── ── Example / reference scripts (not part of pipeline) ──
+├── print_sim_example.py             # Example usage of vbn_pathgen (reference only)
+├── test_3D_vis.py                   # Example 3D visualization of vbn_pathgen (reference only)
 │
 │── ── Saved checkpoints (WandB sweep outputs — never overwrite) ──
 ├── VBN-modeling/                    # ~80 run dirs, each: <run_id>/checkpoints/epoch=*.ckpt
@@ -119,14 +124,11 @@ vbn-flow-model/
 
 ## Active Development Goals (in priority order)
 1. Integrate iLQR into the prediction pipeline for arbitrary trajectories
-   generated from vbn_pathgen (inputs/pathgen.py)
+   generated from vbn_pathgen (inputs/vbn_pathgen.py)
 2. Refactor w_cmd_opt to a piecewise-linear function of linear toolpath moves
    (currently continuously changing per trajectory)
-3. Replace CLI argument parsing with a config dict/dataclass or dedicated
-   config JSON file for iLQR parameters
-4. Add tqdm progress bars to iLQR iterations and segment loops
-5. (Stretch) Port optimisation to Crocoddyl library for DDP/iLQR solvers
-6. (Stretch) Replace MATLAB ODE solver with JAX/diffrax stiff solver
+3. (Stretch) Port optimisation to Crocoddyl library for DDP/iLQR solvers
+4. (Stretch) Replace MATLAB ODE solver with JAX/diffrax stiff solver
    (Kvaerno5 or ImplicitEuler)
 
 ## Known Issues and Context
