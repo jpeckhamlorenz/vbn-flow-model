@@ -24,3 +24,4 @@ traj_WALR-test/
 traj_NALO-test/
 traj_WALO-test/
 sweep_results**/
+pathgen_ilqr_results/

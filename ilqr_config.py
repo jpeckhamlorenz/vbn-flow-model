@@ -76,7 +76,7 @@ class CostConfig:
 @dataclass
 class SolverConfig:
     """iLQR solver hyper-parameters."""
-    max_iter: int = 100
+    max_iter: int = 200
     tol: float = 1e-4
     eps_ode: float = 1e-5                  # FD perturbation for ODE dims
     eps_ctrl: float = 1e-7                 # (legacy) absolute FD for controls
@@ -88,8 +88,8 @@ class SolverConfig:
 @dataclass
 class BoundsConfig:
     """Control bounds and rate limits."""
-    Q_min: float = -9e-8                   # [m³/s]
-    Q_max: float = 1e-7                    # [m³/s]
+    Q_min: float = -20e-9                   # [m³/s]
+    Q_max: float = 20e-9                    # [m³/s]
     w_min: float = 0.0007                  # [m]
     w_max: float = 0.0029                  # [m]
     w_delta_plus: Optional[float] = 0.0003    # max width above W_com [m]
@@ -104,7 +104,7 @@ class BoundsConfig:
 @dataclass
 class RunConfig:
     """Run-mode parameters controlling the experiment."""
-    n_samples: int = 500                   # iLQR horizon length [timesteps]
+    n_samples: int = 14000                   # iLQR horizon length [timesteps]
     window_len_s: float = 4.5             # windowed LSTM window length [s]
     window_step_s: float = 0.1            # windowed LSTM window step [s]
     use_windowed_cost: bool = False        # target deployed windowed pipeline

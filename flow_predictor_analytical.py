@@ -210,6 +210,8 @@ def flow_predictor_plots(
     # leg_bead = plt.figure("beadwidth legend")
     # leg_bead.legend(ax.get_legend_handles_labels()[0],ax.get_legend_handles_labels()[1])
 
+    return(fig_flow, ax)
+
 
 
 

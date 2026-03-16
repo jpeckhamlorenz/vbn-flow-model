@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from typing import List
 
-# from test_3D_vis import plot_bead_rect_plotly
+from test_3D_vis import plot_bead_rect_plotly
 
 import plotly.io as pio
 pio.renderers.default = "browser"
