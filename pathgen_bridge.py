@@ -680,6 +680,8 @@ def piecewise_linearize_w_cmd(
     max_speed: float = np.inf,
     min_segment_duration: float = 1.0,
     rdp_tolerance: float = 1e-5,
+    flat_tolerance: float = 5e-5,
+    min_flat_duration: float = 1.0,
     w_cmd_naive: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Approximate w_cmd_opt as a piecewise-linear trajectory.
@@ -689,16 +691,18 @@ def piecewise_linearize_w_cmd(
     position+velocity command pipeline.
 
     Algorithm:
-        1. Ramer-Douglas-Peucker (RDP) simplification to find breakpoints
-           that capture the trajectory shape within *rdp_tolerance*.
-        2. Enforce *min_segment_duration*: merge breakpoints that are too
-           close in time.  When merging, the breakpoint whose removal
-           causes the least additional approximation error is dropped.
+        0. Detect flat (hold) regions where |dw/dt| stays below
+           *flat_tolerance* for at least *min_flat_duration*.  Lock
+           boundary breakpoints at the start/end of each flat region
+           so that holds are preserved as true zero-velocity segments
+           rather than being absorbed into slow diagonals by RDP.
+        1. Ramer-Douglas-Peucker (RDP) simplification on the non-flat
+           (transition) regions to find additional breakpoints.
+        2. Merge all breakpoints and enforce *min_segment_duration*.
         3. Enforce *max_speed*: if a segment's slope exceeds the limit,
-           clamp the target endpoint so the ramp runs at max_speed, then
-           hold constant for the remainder of that segment.
-        4. Reconstruct the full-length piecewise-linear trajectory via
-           linear interpolation between the surviving breakpoints.
+           insert an extra breakpoint where the actuator reaches the
+           target at max_speed, then hold constant for the remainder.
+        4. Reconstruct the full-length piecewise-linear trajectory.
 
     Args:
         t:           [N] time axis [s].
@@ -713,6 +717,13 @@ def piecewise_linearize_w_cmd(
                      Ramer-Douglas-Peucker perpendicular-distance tolerance
                      [m].  Smaller → more breakpoints, closer fit.
                      Default 1e-5 m (0.01 mm).
+        flat_tolerance:
+                     Maximum |dw/dt| [m/s] for a region to be considered
+                     a hold (zero-velocity).  Default 5e-5 m/s (0.05 mm/s).
+        min_flat_duration:
+                     Minimum duration [s] for a near-constant region to
+                     be classified as a hold.  Shorter flat patches are
+                     ignored.  Default 0.5 s.
         w_cmd_naive: [N] optional naive beadwidth command [m].
                      If provided, its breakpoint times are seeded into
                      the RDP result so that the linearized trajectory
@@ -727,19 +738,61 @@ def piecewise_linearize_w_cmd(
         return w_cmd_opt.copy()
 
     # ------------------------------------------------------------------
-    # Step 0: Ramer-Douglas-Peucker to find initial breakpoints
+    # Step 0: Detect flat (hold) regions and lock their boundaries
     # ------------------------------------------------------------------
-    bp_mask = _rdp(t, w_cmd_opt, rdp_tolerance)
-    bp_indices = list(np.where(bp_mask)[0])
+    flat_regions = _detect_flat_regions(
+        t, w_cmd_opt, flat_tolerance, min_flat_duration
+    )
 
-    # Ensure first and last points are always breakpoints
-    if bp_indices[0] != 0:
-        bp_indices.insert(0, 0)
-    if bp_indices[-1] != N - 1:
-        bp_indices.append(N - 1)
+    # Locked breakpoints from flat-region boundaries
+    locked_bp = set()
+    locked_bp.add(0)
+    locked_bp.add(N - 1)
+    for (f_start, f_end) in flat_regions:
+        locked_bp.add(f_start)
+        locked_bp.add(f_end)
+
+    # Build a mask of indices that belong to flat regions (for RDP skip)
+    is_flat = np.zeros(N, dtype=bool)
+    for (f_start, f_end) in flat_regions:
+        is_flat[f_start:f_end + 1] = True
 
     # ------------------------------------------------------------------
-    # Step 0b: Seed naive breakpoints (if provided)
+    # Step 0b: RDP on non-flat (transition) sub-segments only
+    # ------------------------------------------------------------------
+    # Identify contiguous transition regions between flat zones
+    bp_indices = set(locked_bp)
+
+    # Find transition intervals: contiguous runs where is_flat is False
+    transition_intervals = []
+    in_transition = False
+    tr_start = 0
+    for i in range(N):
+        if not is_flat[i] and not in_transition:
+            tr_start = i
+            in_transition = True
+        elif is_flat[i] and in_transition:
+            transition_intervals.append((tr_start, i - 1))
+            in_transition = False
+    if in_transition:
+        transition_intervals.append((tr_start, N - 1))
+
+    # Run RDP on each transition interval
+    for (tr_s, tr_e) in transition_intervals:
+        if tr_e - tr_s < 2:
+            bp_indices.add(tr_s)
+            bp_indices.add(tr_e)
+            continue
+        sub_t = t[tr_s:tr_e + 1]
+        sub_w = w_cmd_opt[tr_s:tr_e + 1]
+        sub_mask = _rdp(sub_t, sub_w, rdp_tolerance)
+        for j in np.where(sub_mask)[0]:
+            bp_indices.add(tr_s + j)
+
+    bp_indices = sorted(bp_indices)
+
+    # ------------------------------------------------------------------
+    # Step 0c: Seed naive breakpoints (if provided)
     # ------------------------------------------------------------------
     if w_cmd_naive is not None:
         naive_bps = _detect_naive_breakpoints(t, w_cmd_naive)
@@ -751,13 +804,15 @@ def piecewise_linearize_w_cmd(
 
     # ------------------------------------------------------------------
     # Step 1: Merge breakpoints that are too close in time
+    #         (but never remove locked flat-region boundaries)
     # ------------------------------------------------------------------
     bp_indices = _enforce_min_duration(
-        t, w_cmd_opt, bp_indices, min_segment_duration
+        t, w_cmd_opt, bp_indices, min_segment_duration,
+        protected=locked_bp,
     )
 
     # ------------------------------------------------------------------
-    # Step 2: Enforce max speed
+    # Step 2: Enforce max speed (with hold insertion)
     # ------------------------------------------------------------------
     bp_indices, bp_values = _enforce_max_speed(
         t, w_cmd_opt, bp_indices, max_speed
@@ -773,6 +828,59 @@ def piecewise_linearize_w_cmd(
 
 
 # ── Private helpers for piecewise_linearize_w_cmd ────────────────────────
+
+
+def _detect_flat_regions(
+    t: np.ndarray,
+    w: np.ndarray,
+    flat_tolerance: float,
+    min_flat_duration: float,
+) -> list[tuple[int, int]]:
+    """Identify contiguous regions where w is approximately constant.
+
+    A sample is "flat" if the local |dw/dt| is below *flat_tolerance*.
+    Contiguous runs of flat samples shorter than *min_flat_duration*
+    are discarded.
+
+    Returns:
+        List of (start_index, end_index) tuples — inclusive on both ends.
+    """
+    N = len(w)
+    if N < 2:
+        return []
+
+    dt = np.diff(t)
+    dw = np.abs(np.diff(w))
+    slope = dw / np.maximum(dt, 1e-30)
+
+    # A sample i is "flat" if slopes on both sides are small.
+    # For the first/last sample, only one side is checked.
+    flat_mask = np.zeros(N, dtype=bool)
+    flat_mask[0] = slope[0] < flat_tolerance
+    flat_mask[-1] = slope[-1] < flat_tolerance
+    for i in range(1, N - 1):
+        flat_mask[i] = (slope[i - 1] < flat_tolerance and
+                        slope[i] < flat_tolerance)
+
+    # Extract contiguous runs
+    regions = []
+    in_run = False
+    run_start = 0
+    for i in range(N):
+        if flat_mask[i] and not in_run:
+            run_start = i
+            in_run = True
+        elif not flat_mask[i] and in_run:
+            regions.append((run_start, i - 1))
+            in_run = False
+    if in_run:
+        regions.append((run_start, N - 1))
+
+    # Filter by minimum duration
+    regions = [(s, e) for s, e in regions
+               if t[e] - t[s] >= min_flat_duration]
+
+    return regions
 
 
 def _rdp(
@@ -851,37 +959,40 @@ def _enforce_min_duration(
     w_cmd: np.ndarray,
     bp_indices: list[int],
     min_dur: float,
+    protected: Optional[set[int]] = None,
 ) -> list[int]:
     """Remove breakpoints that create segments shorter than min_dur.
 
     Uses a greedy forward pass: keep the first breakpoint, then only
     accept the next one if it's at least min_dur after the last kept.
-    Among skipped candidates, the one closest to the midpoint of the
-    resulting merged segment is retained if it improves fidelity
-    (measured by max deviation).
+    Breakpoints in *protected* are never removed (e.g. flat-region
+    boundaries).
+
+    Args:
+        t:          Full time vector.
+        w_cmd:      Full beadwidth vector (for future fidelity checks).
+        bp_indices: Sorted list of breakpoint indices.
+        min_dur:    Minimum time gap between consecutive breakpoints.
+        protected:  Set of indices that must not be removed.
     """
+    if protected is None:
+        protected = set()
+
     if len(bp_indices) <= 2:
         return bp_indices
 
     kept = [bp_indices[0]]
-    i = 1
-    while i < len(bp_indices):
+    for i in range(1, len(bp_indices)):
         candidate = bp_indices[i]
         dt_gap = t[candidate] - t[kept[-1]]
 
-        if dt_gap >= min_dur or candidate == bp_indices[-1]:
+        # Always keep: last breakpoint, protected breakpoints, or
+        # candidates that are far enough from the last kept.
+        if (dt_gap >= min_dur or
+                candidate == bp_indices[-1] or
+                candidate in protected):
             kept.append(candidate)
-            i += 1
-        else:
-            # Collect all candidates in this too-short cluster
-            cluster_start = i
-            while (i < len(bp_indices) - 1 and
-                   t[bp_indices[i]] - t[kept[-1]] < min_dur):
-                i += 1
-            # i now points to the first candidate that IS far enough
-            # (or the last breakpoint).  Accept it.
-            kept.append(bp_indices[i])
-            i += 1
+        # else: skip this candidate (merged into surrounding segments)
 
     # Deduplicate while preserving order
     seen = set()
@@ -899,10 +1010,12 @@ def _enforce_max_speed(
     bp_indices: list[int],
     max_speed: float,
 ) -> tuple[list[int], np.ndarray]:
-    """Clamp breakpoint values so no segment exceeds max_speed.
+    """Clamp segment slopes to max_speed, inserting hold breakpoints.
 
-    If the slope from breakpoint A to breakpoint B exceeds max_speed,
-    the value at B is clamped so the ramp runs at exactly max_speed.
+    If the desired move from breakpoint A → B exceeds max_speed, the
+    ramp runs at exactly max_speed until the target value is reached,
+    then holds constant for the remainder of that segment.  An extra
+    breakpoint is inserted at the time the ramp finishes.
 
     Returns:
         (bp_indices, bp_values) where bp_values[i] is the (possibly
@@ -913,14 +1026,48 @@ def _enforce_max_speed(
     if not np.isfinite(max_speed):
         return bp_indices, bp_vals
 
-    for k in range(1, len(bp_indices)):
-        dt_seg = t[bp_indices[k]] - t[bp_indices[k - 1]]
-        if dt_seg <= 0:
-            continue
-        dw = bp_vals[k] - bp_vals[k - 1]
-        slope = abs(dw) / dt_seg
-        if slope > max_speed:
-            sign = 1.0 if dw >= 0 else -1.0
-            bp_vals[k] = bp_vals[k - 1] + sign * max_speed * dt_seg
+    # Work through segments, potentially inserting new breakpoints.
+    # Build new lists to avoid index-shift issues.
+    new_indices = [bp_indices[0]]
+    new_vals = [bp_vals[0]]
 
-    return bp_indices, bp_vals
+    for k in range(1, len(bp_indices)):
+        t_prev = t[new_indices[-1]]
+        w_prev = new_vals[-1]
+        t_next = t[bp_indices[k]]
+        w_target = bp_vals[k]
+
+        dt_seg = t_next - t_prev
+        if dt_seg <= 0:
+            new_indices.append(bp_indices[k])
+            new_vals.append(w_target)
+            continue
+
+        dw = w_target - w_prev
+        slope = abs(dw) / dt_seg
+
+        if slope > max_speed:
+            # Time needed to ramp at max_speed to the target value
+            t_ramp = abs(dw) / max_speed
+            t_arrival = t_prev + t_ramp
+
+            if t_arrival < t_next:
+                # Insert a breakpoint where the ramp finishes (hold starts)
+                # Find the nearest index in the time vector
+                arrival_idx = int(np.argmin(np.abs(t - t_arrival)))
+                # Clamp to be strictly between previous and next breakpoints
+                arrival_idx = max(arrival_idx, new_indices[-1] + 1)
+                arrival_idx = min(arrival_idx, bp_indices[k] - 1)
+
+                if arrival_idx > new_indices[-1]:
+                    new_indices.append(arrival_idx)
+                    new_vals.append(w_target)  # reached target
+
+            # End of segment holds at target
+            new_indices.append(bp_indices[k])
+            new_vals.append(w_target)
+        else:
+            new_indices.append(bp_indices[k])
+            new_vals.append(w_target)
+
+    return new_indices, np.array(new_vals, dtype=np.float64)
