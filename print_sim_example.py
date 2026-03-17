@@ -144,7 +144,7 @@ if __name__ == '__main__':
         _dm.setup("fit")
 
         # ── Windowed hybrid flow prediction (analytical ODE + LSTM residual)
-        Q_pred, Q_vbn, Q_res_pred = flow_predictor_lstm_windowed(
+        Q_out_naive, Q_vbn_naive, Q_res_naive = flow_predictor_lstm_windowed(
             time_np=path_df['t'].to_numpy(),
             command_np=path_df['q'].to_numpy() / 1e9,
             bead_np=path_df['w_pred'].to_numpy() / 1000,
@@ -157,39 +157,56 @@ if __name__ == '__main__':
 
         fig_flow, ax_flow = flow_predictor_plots(
             ts=path_df['t'].to_numpy(),
-            Q_out=Q_vbn,
+            Q_out=Q_out_naive,
             Q_com=path_df['q'].to_numpy() / 1e9,
-            W_com=path_df['w'].to_numpy() / 1000,
+            W_com=path_df['w'].to_numpy() / 1,
         )
         # Overlay windowed LSTM prediction
-        ax_flow.plot(path_df['t'].to_numpy(), Q_pred * 6e7,
+        ax_flow.plot(path_df['t'].to_numpy(), Q_out_naive * 6e7,
                      'r-', lw=1.5, label='Windowed LSTM')
         ax_flow.legend()
 
         # ── iLQR optimization (optional: load pre-computed or run in-process)
-        ILQR_RESULTS_PATH = None  # Set to a .npz path to load pre-computed results
+        ILQR_RESULTS_PATH = "pathgen_ilqr_results/latest_controls.npz"  # Set to a .npz path to load pre-computed results, or None to run iLQR in-process
         RUN_ILQR = True           # Set False to skip iLQR entirely
 
         if ILQR_RESULTS_PATH is not None:
             from pathgen_bridge import load_ilqr_results
+            print(f'Loading iLQR results from {ILQR_RESULTS_PATH}...')
             ilqr_results = load_ilqr_results(ILQR_RESULTS_PATH)
+            print('\tLoaded iLQR results with keys:', ilqr_results.keys())
         elif RUN_ILQR:
             from pathgen_bridge import run_ilqr_on_pathgen
             print('Running iLQR optimization on pathgen trajectory...')
-            # ilqr_results = run_ilqr_on_pathgen(
-            #     path_df,
-            #     ilqr_kwargs=dict(G=1e15, R_diag=[1e10, 1e2], S_diag=[1e12, 1e6],
-            #                      segment_len=450, max_iter=20),
-            #     save_path="pathgen_ilqr_results/latest_controls.npz",
-            # )
-            ilqr_results = run_ilqr_on_pathgen(
-                path_df,
-                save_path="pathgen_ilqr_results/latest_controls.npz",
-            )
+            ilqr_results = run_ilqr_on_pathgen(path_df, save_path="pathgen_ilqr_results/latest_controls.npz")
+            print('\tCompleted iLQR optimization with results keys:', ilqr_results.keys())
         else:
             ilqr_results = None
 
         if ilqr_results is not None:
+
+            from pathgen_bridge import smooth_segment_boundaries
+
+            Q_cmd_opt_step, w_cmd_opt_step = smooth_segment_boundaries(
+                t_cmd_opt = ilqr_results['t'],
+                Q_cmd_opt = ilqr_results['Q_cmd_opt'],
+                w_cmd_opt = ilqr_results['w_cmd_opt'],)
+
+            from pathgen_bridge import smooth_Q_cmd
+            Q_cmd_opt = smooth_Q_cmd(Q_cmd_opt_step)
+
+            Q_out_opt, Q_vbn_opt, Q_res_opt = flow_predictor_lstm_windowed(
+                time_np = ilqr_results['t'],
+                command_np = Q_cmd_opt,
+                bead_np=w_cmd_opt_step,
+                model_type='WALR',
+                ckpt_path=_ckpt_path,
+                run_config=_run_config,
+                norm_stats=_dm.norm_stats,
+                bead_units="m",
+            )
+
+
             ax_flow.plot(ilqr_results['t'], ilqr_results['Q_out_opt'] * 6e7,
                          color='orange', lw=2, label='iLQR optimized')
             ax_flow.legend()
@@ -218,6 +235,8 @@ if __name__ == '__main__':
     # meshcat.PublishRecording()
     # input("Press to end and close plots...")
 
+
+#%%
     font = {'family': 'serif',
             'color': 'k',
             'weight': 'normal',
@@ -226,7 +245,8 @@ if __name__ == '__main__':
 
     from matplotlib import pyplot as plt
 
-    plt.close('all')
+
+
 
     fig_q_out = plt.figure("output flow graph")
     ax_q_out = fig_q_out.add_subplot(1, 1, 1)
@@ -237,11 +257,11 @@ if __name__ == '__main__':
     plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
     plt.xscale('linear')
     plt.yscale('linear')
-    plt.plot(ilqr_results['t'], ilqr_results['Q_cmd_naive'] * 1e9, label='Flow Command Input',
+    plt.plot(path_df['t'], path_df['q'], label='Flow Command Input',
              color='black', linestyle='--', linewidth=5)
-    plt.plot(ilqr_results['t'], (ilqr_results['Q_out_naive'] - 2e-10) * 1e9, label='Flow Output (Naive)',
+    plt.plot(path_df['t'], Q_out_naive * 1e9, label='Flow Output (Naive)',
              color='red', linestyle='-', linewidth=2)
-    plt.plot(ilqr_results['t'], ilqr_results['Q_out_opt'] * 1e9, label='Flow Output (iLQR)',
+    plt.plot(ilqr_results['t'], Q_out_opt * 1e9, label='Flow Output (iLQR)',
              color='orange', linestyle='-', linewidth=2)
     ax_q_out.set_aspect(7)
     # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
@@ -263,7 +283,7 @@ if __name__ == '__main__':
     plt.yscale('linear')
     plt.plot(ilqr_results['t'], ilqr_results['w_cmd_naive'] * 1e3, label='Bead Command (Naive)',
              color='black', linestyle='--', linewidth=5)
-    plt.plot(ilqr_results['t'], ilqr_results['w_cmd_opt'] * 1e3, label='Bead Command (iLQR)',
+    plt.plot(ilqr_results['t'], w_cmd_opt_step * 1e3, label='Bead Command (iLQR)',
              color='green', linestyle='-', linewidth=2)
     ax_w_cmd.set_aspect(20)
     # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
@@ -283,7 +303,7 @@ if __name__ == '__main__':
     plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
     plt.xscale('linear')
     plt.yscale('linear')
-    plt.plot(ilqr_results['t'], ilqr_results['Q_cmd_opt'] * 1e9, label='iLQR cmd',
+    plt.plot(ilqr_results['t'], Q_cmd_opt * 1e9, label='iLQR cmd',
              color='blue', linestyle='-', linewidth=2)
     plt.plot(ilqr_results['t'], ilqr_results['Q_com'] * 1e9, label='Q_com',
              color='black', linestyle='--', linewidth=5)

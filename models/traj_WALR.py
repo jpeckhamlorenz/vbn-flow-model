@@ -387,9 +387,10 @@ def get_best_run(entity = 'jplorenz-university-of-michigan',
         except (TypeError, ValueError):
             bad_runs.append((run.id, val))
 
-    print("Skipped runs:")
-    for rid, v in bad_runs:
-        print(rid, v)
+    if len(bad_runs) > 0:
+        print("Skipped runs:")
+        for rid, v in bad_runs:
+            print(rid, v)
 
     # for run in runs:
     #     run_losses[run.id] = run.summary['validate/loss']

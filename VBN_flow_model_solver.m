@@ -32,7 +32,7 @@ x = [];
 %%
 for i = 1:length(ts)-1
 
-    % disp(i);
+%    disp(i);
     if ts(i)<=0.1  % TYP: 0.2
         u1 = @(t) ((a.*log(exp(b.*(c-t))+1))./b)+t.*(a+d);
         u2 = @(t) input_beadwidth(i) + (input_beadwidth(i+1)-input_beadwidth(i))*(t-ts(i))/(ts(i+1)-ts(i));

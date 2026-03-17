@@ -541,4 +541,134 @@ def run_ilqr_on_pathgen(
 
     return results
 
+def smooth_segment_boundaries(
+    t_cmd_opt: np.ndarray,
+    Q_cmd_opt: np.ndarray,
+    w_cmd_opt: np.ndarray,
+    segment_len: int = 450,
+    dt_original: float = 0.01,
+    pre_boundary_steps: int = 10,
+    post_boundary_steps: int = 100,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Replace segment-boundary spike artifacts with linear interpolation.
 
+    The segmented iLQR solver resets LSTM hidden state at each segment
+    boundary, producing transient spikes in Q_cmd and w_cmd near the
+    junction.  This function identifies the affected samples and replaces
+    them with a linear interpolation between the nearest clean points on
+    either side.
+
+    Boundary locations are found in *time* (multiples of
+    ``segment_len * dt_original``) rather than by index, so the function
+    remains correct even if the trajectories have been resampled to a
+    different timestep or made non-uniform after iLQR.
+
+    The ``pre/post_boundary_steps`` parameters refer to steps in the
+    *current* time vector ``t_cmd_opt`` (not the original iLQR grid).
+
+    Args:
+        t_cmd_opt:  [N] time axis [s] corresponding to Q/w arrays.
+        Q_cmd_opt:  [N] optimised flowrate command [m^3/s].
+        w_cmd_opt:  [N] optimised bead-width command [m].
+        segment_len: iLQR segment length in original timesteps
+            (default 450).
+        dt_original: Original iLQR timestep [s] (default 0.01).
+            Used with *segment_len* to compute the boundary time
+            interval: ``T_seg = segment_len * dt_original``.
+        pre_boundary_steps: Number of steps in *t_cmd_opt* before
+            each boundary index to replace (default 1).
+        post_boundary_steps: Number of steps in *t_cmd_opt* after
+            each boundary index to replace (default 5).
+
+    Returns:
+        (Q_cmd_smoothed, w_cmd_smoothed) — same length as inputs.
+        Originals are NOT modified (copies are returned).
+    """
+    N = len(Q_cmd_opt)
+    Q_out = Q_cmd_opt.copy()
+    w_out = w_cmd_opt.copy()
+
+    T_seg = segment_len * dt_original  # boundary time interval [s]
+
+    # Find boundary times: T_seg, 2*T_seg, ... up to max(t)
+    t_max = t_cmd_opt[-1]
+    boundary_times = np.arange(T_seg, t_max + T_seg * 0.5, T_seg)
+
+    for t_boundary in boundary_times:
+        # Index of the sample nearest to this boundary time
+        b = int(np.argmin(np.abs(t_cmd_opt - t_boundary)))
+
+        # Faulty range indices [lo, hi)
+        lo = max(b - pre_boundary_steps, 0)
+        hi = min(b + post_boundary_steps, N)
+        n_faulty = hi - lo
+        if n_faulty <= 0:
+            continue
+
+        # Anchor indices: last clean point before, first clean point after
+        left_anchor = max(lo - 1, 0)
+        right_anchor = min(hi, N - 1)
+        if left_anchor == right_anchor:
+            continue
+
+        # Interpolate excluding endpoints so the anchors themselves stay
+        # untouched and the replacement values sit strictly between them.
+        for arr in (Q_out, w_out):
+            interp_vals = np.linspace(
+                arr[left_anchor], arr[right_anchor], n_faulty + 2
+            )[1:-1]
+            arr[lo:hi] = interp_vals
+
+    return Q_out, w_out
+
+
+def smooth_Q_cmd(
+    Q_cmd: np.ndarray,
+    window_length: int = 15,
+    polyorder: int = 3,
+) -> np.ndarray:
+    """Lightly smooth Q_cmd to reduce high-acceleration transients.
+
+    Applies a Savitzky-Golay filter which fits a local polynomial of
+    degree *polyorder* over a sliding window of *window_length* samples.
+    This preserves ramps and steady-state regions (up to the polynomial
+    order) while attenuating sharp spikes that would demand unrealistic
+    pump acceleration.
+
+    Typical usage:
+        Q_smooth = smooth_Q_cmd(Q_cmd, window_length=15, polyorder=3)
+
+    Tuning guidance:
+        - Larger *window_length* → more aggressive smoothing (must be odd
+          and > polyorder).
+        - Higher *polyorder* → preserves sharper features.  polyorder=3
+          is a good default for piecewise-linear-ish commands.
+        - For dt=0.01 s trajectories, window_length=15 smooths over a
+          0.15 s neighbourhood.  For resampled (e.g. dt=0.1 s) data,
+          reduce window_length proportionally.
+
+    Args:
+        Q_cmd:         [N] flowrate command array [m^3/s].
+        window_length: Number of samples in the local fitting window.
+                       Must be a positive odd integer > polyorder
+                       (default 15).
+        polyorder:     Polynomial order for the local fit (default 3).
+
+    Returns:
+        Q_cmd_smoothed — same length as input.  A copy; the original is
+        NOT modified.
+    """
+    from scipy.signal import savgol_filter
+
+    # Enforce odd window_length (S-G requirement)
+    if window_length % 2 == 0:
+        window_length += 1
+
+    # Clamp window_length to array length (must be <= N and > polyorder)
+    if window_length > len(Q_cmd):
+        window_length = len(Q_cmd) if len(Q_cmd) % 2 == 1 else len(Q_cmd) - 1
+    if window_length <= polyorder:
+        # Not enough points to filter — return unchanged copy
+        return Q_cmd.copy()
+
+    return savgol_filter(Q_cmd, window_length, polyorder)

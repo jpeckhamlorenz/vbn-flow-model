@@ -153,6 +153,8 @@ def flow_predictor_lstm_windowed(
     Q_vbn = np.asarray(Q_vbn).reshape(-1)
 
     # ---- load model
+
+    print("Running LSTM flow prediction with model '{}' on device '{}' using checkpoint '{}'...".format(model_type, device_type, ckpt_path))
     assert device_type in ["cpu", "cuda", "mps"], "device_type must be 'cpu', 'cuda', or 'mps'"
     device = torch.device(device_type)
 
@@ -186,7 +188,9 @@ def flow_predictor_lstm_windowed(
     else:
         raise ValueError("bead_units must be 'm' or 'mm'")
 
+
     for s, L in zip(starts, lens):
+        # print(f"Processing window starting at index {s} with length {L} samples (time {time[s]:.2f}s to {time[s+L-1]:.2f}s)...")
         sl = slice(s, s + L)
 
         # Build features in the SAME space used for computing norm_stats during training.
@@ -218,6 +222,7 @@ def flow_predictor_lstm_windowed(
         acc[sl] += y_hat_phys
         cnt[sl] += 1.0
 
+
     res_pred = (acc / np.clip(cnt, 1.0, None)).astype(np.float32)
     Q_pred = (Q_vbn + res_pred).astype(np.float32)
 
@@ -233,5 +238,5 @@ def flow_predictor_lstm_windowed(
 
 
 
-
+    print(f"LSRM flow prediction complete. Processed {len(starts)} windows covering {N} time steps.")
     return Q_pred, Q_vbn.astype(np.float32), res_pred
