@@ -28,9 +28,6 @@ import torch
 
 from sys import platform
 
-if platform == 'darwin':
-    from flow_predictor_lstm import flow_predictor_lstm_windowed
-    from flow_predictor_analytical import flow_predictor_plots
 
 #%% functions
 def conform_pathgen(path_df: pd.DataFrame, ee_pose0: RigidTransform, rotate_z = 50.0):
@@ -132,6 +129,11 @@ if __name__ == '__main__':
     print("Finished path generation")
 
     if platform == 'darwin':
+
+        from flow_predictor_lstm import flow_predictor_lstm_windowed
+        from flow_predictor_analytical import flow_predictor_plots
+
+
         # ── Resolve checkpoint for windowed prediction ───────────────────
         from models.traj_WALR import get_best_run, DataModule
         from pathlib import Path as _Path
@@ -155,17 +157,6 @@ if __name__ == '__main__':
             bead_units="m",
         )
 
-        fig_flow, ax_flow = flow_predictor_plots(
-            ts=path_df['t'].to_numpy(),
-            Q_out=Q_out_naive,
-            Q_com=path_df['q'].to_numpy() / 1e9,
-            W_com=path_df['w'].to_numpy() / 1,
-        )
-        # Overlay windowed LSTM prediction
-        ax_flow.plot(path_df['t'].to_numpy(), Q_out_naive * 6e7,
-                     'r-', lw=1.5, label='Windowed LSTM')
-        ax_flow.legend()
-
         # ── iLQR optimization (optional: load pre-computed or run in-process)
         ILQR_RESULTS_PATH = "pathgen_ilqr_results/latest_controls.npz"  # Set to a .npz path to load pre-computed results, or None to run iLQR in-process
         RUN_ILQR = True           # Set False to skip iLQR entirely
@@ -185,15 +176,15 @@ if __name__ == '__main__':
 
         if ilqr_results is not None:
 
-            from pathgen_bridge import smooth_segment_boundaries
+            from pathgen_bridge import smooth_segment_boundaries, smooth_Q_cmd, piecewise_linearize_w_cmd
 
             Q_cmd_opt_step, w_cmd_opt_step = smooth_segment_boundaries(
                 t_cmd_opt = ilqr_results['t'],
                 Q_cmd_opt = ilqr_results['Q_cmd_opt'],
                 w_cmd_opt = ilqr_results['w_cmd_opt'],)
 
-            from pathgen_bridge import smooth_Q_cmd, piecewise_linearize_w_cmd
-            Q_cmd_opt = smooth_Q_cmd(Q_cmd_opt_step)
+            Q_cmd_opt = smooth_Q_cmd(Q_cmd_opt_step, window_length=151)
+
             w_cmd_opt = piecewise_linearize_w_cmd(
                 t = ilqr_results['t'],
                 w_cmd_opt = w_cmd_opt_step,
@@ -201,11 +192,10 @@ if __name__ == '__main__':
                 max_speed = 0.1,  # m/s
             )
 
-
             Q_out_opt, Q_vbn_opt, Q_res_opt = flow_predictor_lstm_windowed(
                 time_np = ilqr_results['t'],
                 command_np = Q_cmd_opt,
-                bead_np=w_cmd_opt_step,
+                bead_np=w_cmd_opt,
                 model_type='WALR',
                 ckpt_path=_ckpt_path,
                 run_config=_run_config,
@@ -213,10 +203,15 @@ if __name__ == '__main__':
                 bead_units="m",
             )
 
+        flow_predictor_plots(
+            path_df = path_df,
+            ilqr_results = ilqr_results,
+            Q_out_naive=Q_out_naive,
+            Q_cmd_opt = Q_cmd_opt,
+            w_cmd_opt = w_cmd_opt,
+            Q_out_opt = Q_out_opt
+        )
 
-            ax_flow.plot(ilqr_results['t'], ilqr_results['Q_out_opt'] * 6e7,
-                         color='orange', lw=2, label='iLQR optimized')
-            ax_flow.legend()
     
     # q_traj, ts, qs = follow_pathgen(path_df, plant, ee_pose0, q0)
     
@@ -241,115 +236,4 @@ if __name__ == '__main__':
     # meshcat.StopRecording()
     # meshcat.PublishRecording()
     # input("Press to end and close plots...")
-
-
-#%%
-    font = {'family': 'serif',
-            'color': 'k',
-            'weight': 'normal',
-            'size': 14,
-            }
-
-    from matplotlib import pyplot as plt
-
-
-
-
-    fig_q_out = plt.figure("output flow graph")
-    ax_q_out = fig_q_out.add_subplot(1, 1, 1)
-    plt.xlabel('Time [s]', fontdict=font)
-    plt.ylabel('Flowrate [mm3/s]', fontdict=font)
-    plt.xlim(5, 140)
-    plt.ylim(-1, 6)
-    plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
-    plt.xscale('linear')
-    plt.yscale('linear')
-    plt.plot(path_df['t'], path_df['q'], label='Flow Command Input',
-             color='black', linestyle='--', linewidth=5)
-    plt.plot(path_df['t'], Q_out_naive * 1e9, label='Flow Output (Naive)',
-             color='red', linestyle='-', linewidth=2)
-    plt.plot(ilqr_results['t'], Q_out_opt * 1e9, label='Flow Output (iLQR)',
-             color='orange', linestyle='-', linewidth=2)
-    ax_q_out.set_aspect(7)
-    # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
-    # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
-    # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
-    # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
-    # ax.legend()
-    leg_q_out = plt.figure("output flow legend")
-    leg_q_out.legend(ax_q_out.get_legend_handles_labels()[0], ax_q_out.get_legend_handles_labels()[1])
-
-    fig_w_cmd = plt.figure("input bead graph")
-    ax_w_cmd = fig_w_cmd.add_subplot(1, 1, 1)
-    plt.xlabel('Time [s]', fontdict=font)
-    plt.ylabel('Bead Width [mm]', fontdict=font)
-    plt.xlim(5, 140)
-    plt.ylim(0.5, 3.0)
-    plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
-    plt.xscale('linear')
-    plt.yscale('linear')
-    plt.plot(ilqr_results['t'], ilqr_results['w_cmd_naive'] * 1e3, label='Bead Command (Naive)',
-             color='black', linestyle='--', linewidth=5)
-    plt.plot(ilqr_results['t'], w_cmd_opt_step * 1e3, label='Bead Command (iLQR)',
-             color='green', linestyle='-', linewidth=2)
-    ax_w_cmd.set_aspect(20)
-    # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
-    # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
-    # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
-    # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
-    # ax.legend()
-    leg_w_cmd = plt.figure("output bead legend")
-    leg_w_cmd.legend(ax_w_cmd.get_legend_handles_labels()[0], ax_w_cmd.get_legend_handles_labels()[1])
-
-    fig_q_cmd = plt.figure("input flow graph")
-    ax_q_cmd = fig_q_cmd.add_subplot(1, 1, 1)
-    plt.xlabel('Time [s]', fontdict=font)
-    plt.ylabel('Flowrate [mm3/s]', fontdict=font)
-    plt.xlim(5, 140)
-    plt.ylim(-10, 75)
-    plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
-    plt.xscale('linear')
-    plt.yscale('linear')
-    plt.plot(ilqr_results['t'], Q_cmd_opt * 1e9, label='iLQR cmd',
-             color='blue', linestyle='-', linewidth=2)
-    plt.plot(ilqr_results['t'], ilqr_results['Q_com'] * 1e9, label='Q_com',
-             color='black', linestyle='--', linewidth=5)
-    # ax_q_cmd.set_aspect(0.9)
-    # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
-    # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
-    # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
-    # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
-    # ax.legend()
-    leg_q_cmd = plt.figure("input flow legend")
-    leg_q_cmd.legend(ax_q_cmd.get_legend_handles_labels()[0], ax_q_cmd.get_legend_handles_labels()[1])
-
-    # fig_q_out.savefig("/Users/james/Desktop/q_out.png", dpi=600)
-    # leg_q_out.savefig("/Users/james/Desktop/q_out_legend.png", dpi=600)
-    # fig_w_cmd.savefig("/Users/james/Desktop/w_cmd.png", dpi=600)
-    # leg_w_cmd.savefig("/Users/james/Desktop/w_com_legend.png", dpi=600)
-    # fig_q_cmd.savefig("/Users/james/Desktop/q_cmd.png", dpi=600)
-    # leg_q_cmd.savefig("/Users/james/Desktop/q_cmd_legend.png", dpi=600)
-
     print("\nDone.")
-
-    #%%
-'''    filepath = "/Users/james/Documents/GitHub/VBN_DIW/src/results/test1.npz"
-    data = np.load(filepath, allow_pickle=True)
-
-    time_raw = data['t']
-    time = (time_raw - 15)/2
-    flowrates = data['q']
-
-    # from matplotlib import pyplot as plt
-    # plt.figure()
-    # plt.plot(time_raw, flowrates)
-
-    ax_flow.plot(time,flowrates, 'g:')
-    #set aspect ratio
-    ax_flow.set_aspect(aspect=0.3)
-
-    # save with 600 dpi
-    fig_flow.savefig("beadpinch_test_flowrates.png", dpi=600)'''
-
-
-    

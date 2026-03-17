@@ -108,14 +108,17 @@ def flow_predictor(
 
 
 def flow_predictor_plots(
-        ts,
-        Q_out,
-        Q_com,
-        W_com
+        path_df,
+        ilqr_results,
+        Q_out_naive,
+        Q_cmd_opt,
+        w_cmd_opt,
+        Q_out_opt,
+        save_figs = False
 ):
     # %% plotting setup
 
-    # plt.close('all')
+    plt.close('all')
 
     # class OOMFormatter(matplotlib.ticker.ScalarFormatter):
     #     def __init__(self, order=0, fformat="%1.1f", offset=True, mathText=True):
@@ -138,6 +141,10 @@ def flow_predictor_plots(
     # marker = itertools.cycle((',', '.', 'o', '*'))
     # color = itertools.cycle(('b','r','g','k'))
 
+    ts = path_df['t'].to_numpy()
+    Q_cmd_naive = path_df['q'].to_numpy() / 1e9
+    W_cmd_naive = path_df['w'].to_numpy() / 1
+
     # %% figure: outlet flowrate
     # plot time horizon of outlet flow rate and commanded (inlet) flow rate
 
@@ -155,11 +162,11 @@ def flow_predictor_plots(
     plt.xscale('linear')
     plt.yscale('linear')
 
-    plt.plot(ts, Q_out * 6e7,
+    plt.plot(ts, Q_out_naive * 6e7,
              color='b', linewidth=2,
              label='Flow Rate Output [mL/min]')  # plot outlet flow
 
-    plt.plot(ts, Q_com * 6e7,
+    plt.plot(ts, Q_cmd_naive * 6e7,
              color='r', linewidth=2, linestyle='--',
              label='Flow Rate Command')  # plot inlet (commanded) flow
 
@@ -195,7 +202,7 @@ def flow_predictor_plots(
     #             color='b', linewidth=2,
     #             label='Bead Width Output, W_o [m]')  # plot outlet bead width
 
-    plt.plot(ts, W_com * 1000,
+    plt.plot(ts, W_cmd_naive * 1000,
              color='k', linewidth=2, linestyle='--',
              label='Bead Width Command')  # plot inlet (commanded) bead width
 
@@ -210,7 +217,92 @@ def flow_predictor_plots(
     # leg_bead = plt.figure("beadwidth legend")
     # leg_bead.legend(ax.get_legend_handles_labels()[0],ax.get_legend_handles_labels()[1])
 
-    return(fig_flow, ax)
+    # Overlay windowed LSTM prediction
+    ax.plot(path_df['t'].to_numpy(), Q_out_naive * 6e7,
+                 'r-', lw=1.5, label='Windowed LSTM')
+
+    ax.plot(ilqr_results['t'], ilqr_results['Q_out_opt'] * 6e7,
+                 color='orange', lw=2, label='iLQR optimized')
+    ax.legend()
+
+    # %%
+
+    fig_q_out = plt.figure("output flow graph yo")
+    ax_q_out = fig_q_out.add_subplot(1, 1, 1)
+    plt.xlabel('Time [s]', fontdict=font)
+    plt.ylabel('Flowrate [mm3/s]', fontdict=font)
+    plt.xlim(5, 140)
+    plt.ylim(-1, 6)
+    plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
+    plt.xscale('linear')
+    plt.yscale('linear')
+    plt.plot(path_df['t'], path_df['q'], label='Flow Command Input',
+             color='black', linestyle='--', linewidth=5)
+    plt.plot(path_df['t'], Q_out_naive * 1e9, label='Flow Output (Naive)',
+             color='red', linestyle='-', linewidth=2)
+    plt.plot(ilqr_results['t'], Q_out_opt * 1e9, label='Flow Output (iLQR)',
+             color='orange', linestyle='-', linewidth=2)
+    ax_q_out.set_aspect(7)
+    # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
+    # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
+    # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
+    # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
+    # ax.legend()
+    leg_q_out = plt.figure("output flow legend")
+    leg_q_out.legend(ax_q_out.get_legend_handles_labels()[0], ax_q_out.get_legend_handles_labels()[1])
+
+    fig_w_cmd = plt.figure("input bead graph yo")
+    ax_w_cmd = fig_w_cmd.add_subplot(1, 1, 1)
+    plt.xlabel('Time [s]', fontdict=font)
+    plt.ylabel('Bead Width [mm]', fontdict=font)
+    plt.xlim(5, 140)
+    plt.ylim(0.5, 3.0)
+    plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
+    plt.xscale('linear')
+    plt.yscale('linear')
+    plt.plot(ilqr_results['t'], ilqr_results['w_cmd_naive'] * 1e3, label='Bead Command (Naive)',
+             color='black', linestyle='--', linewidth=5)
+    plt.plot(ilqr_results['t'], w_cmd_opt * 1e3, label='Bead Command (iLQR)',
+             color='green', linestyle='-', linewidth=2)
+    ax_w_cmd.set_aspect(20)
+    # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
+    # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
+    # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
+    # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
+    # ax.legend()
+    leg_w_cmd = plt.figure("output bead legend")
+    leg_w_cmd.legend(ax_w_cmd.get_legend_handles_labels()[0], ax_w_cmd.get_legend_handles_labels()[1])
+
+    fig_q_cmd = plt.figure("input flow graph yo")
+    ax_q_cmd = fig_q_cmd.add_subplot(1, 1, 1)
+    plt.xlabel('Time [s]', fontdict=font)
+    plt.ylabel('Flowrate [mm3/s]', fontdict=font)
+    plt.xlim(5, 140)
+    plt.ylim(-10, 75)
+    plt.grid(which='major', visible=True, color='0.5', linestyle='-', linewidth=0.5)
+    plt.xscale('linear')
+    plt.yscale('linear')
+    plt.plot(ilqr_results['t'], Q_cmd_opt * 1e9, label='iLQR cmd',
+             color='blue', linestyle='-', linewidth=2)
+    plt.plot(ilqr_results['t'], ilqr_results['Q_com'] * 1e9, label='Q_com',
+             color='black', linestyle='--', linewidth=5)
+    # ax_q_cmd.set_aspect(0.9)
+    # ax.xaxis.set_major_formatter(OOMFormatter(-3, "%1.1f"))
+    # plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0),useMathText=True)
+    # ax.yaxis.set_major_formatter(OOMFormatter(3, "%1.1f
+    # plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0),useMathText=True)
+    # ax.legend()
+    leg_q_cmd = plt.figure("input flow legend")
+    leg_q_cmd.legend(ax_q_cmd.get_legend_handles_labels()[0], ax_q_cmd.get_legend_handles_labels()[1])
+
+    if save_figs:
+        fig_q_out.savefig("/Users/james/Desktop/q_out.png", dpi=600)
+        leg_q_out.savefig("/Users/james/Desktop/q_out_legend.png", dpi=600)
+        fig_w_cmd.savefig("/Users/james/Desktop/w_cmd.png", dpi=600)
+        leg_w_cmd.savefig("/Users/james/Desktop/w_com_legend.png", dpi=600)
+        fig_q_cmd.savefig("/Users/james/Desktop/q_cmd.png", dpi=600)
+        leg_q_cmd.savefig("/Users/james/Desktop/q_cmd_legend.png", dpi=600)
+        print("Figures saved to desktop.")
 
 
 
