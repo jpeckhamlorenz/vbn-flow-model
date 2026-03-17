@@ -672,3 +672,255 @@ def smooth_Q_cmd(
         return Q_cmd.copy()
 
     return savgol_filter(Q_cmd, window_length, polyorder)
+
+
+def piecewise_linearize_w_cmd(
+    t: np.ndarray,
+    w_cmd_opt: np.ndarray,
+    max_speed: float = np.inf,
+    min_segment_duration: float = 1.0,
+    rdp_tolerance: float = 1e-5,
+    w_cmd_naive: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Approximate w_cmd_opt as a piecewise-linear trajectory.
+
+    Converts a smooth/curved beadwidth command into a sequence of linear
+    ramps joined by sharp corners — the format required by a low-frequency
+    position+velocity command pipeline.
+
+    Algorithm:
+        1. Ramer-Douglas-Peucker (RDP) simplification to find breakpoints
+           that capture the trajectory shape within *rdp_tolerance*.
+        2. Enforce *min_segment_duration*: merge breakpoints that are too
+           close in time.  When merging, the breakpoint whose removal
+           causes the least additional approximation error is dropped.
+        3. Enforce *max_speed*: if a segment's slope exceeds the limit,
+           clamp the target endpoint so the ramp runs at max_speed, then
+           hold constant for the remainder of that segment.
+        4. Reconstruct the full-length piecewise-linear trajectory via
+           linear interpolation between the surviving breakpoints.
+
+    Args:
+        t:           [N] time axis [s].
+        w_cmd_opt:   [N] optimised beadwidth command [m].
+        max_speed:   Maximum allowed beadwidth rate of change [m/s].
+                     Set to np.inf to disable (default).
+        min_segment_duration:
+                     Minimum time [s] between consecutive command changes.
+                     Inversely related to the command update frequency
+                     (e.g. 0.5 s → max 2 Hz command rate).  Default 0.5.
+        rdp_tolerance:
+                     Ramer-Douglas-Peucker perpendicular-distance tolerance
+                     [m].  Smaller → more breakpoints, closer fit.
+                     Default 1e-5 m (0.01 mm).
+        w_cmd_naive: [N] optional naive beadwidth command [m].
+                     If provided, its breakpoint times are seeded into
+                     the RDP result so that the linearized trajectory
+                     preserves the original handcrafted transition points.
+
+    Returns:
+        w_cmd_pwl — [N] piecewise-linear beadwidth command [m].
+        Same length as input.  A copy; the original is NOT modified.
+    """
+    N = len(w_cmd_opt)
+    if N < 2:
+        return w_cmd_opt.copy()
+
+    # ------------------------------------------------------------------
+    # Step 0: Ramer-Douglas-Peucker to find initial breakpoints
+    # ------------------------------------------------------------------
+    bp_mask = _rdp(t, w_cmd_opt, rdp_tolerance)
+    bp_indices = list(np.where(bp_mask)[0])
+
+    # Ensure first and last points are always breakpoints
+    if bp_indices[0] != 0:
+        bp_indices.insert(0, 0)
+    if bp_indices[-1] != N - 1:
+        bp_indices.append(N - 1)
+
+    # ------------------------------------------------------------------
+    # Step 0b: Seed naive breakpoints (if provided)
+    # ------------------------------------------------------------------
+    if w_cmd_naive is not None:
+        naive_bps = _detect_naive_breakpoints(t, w_cmd_naive)
+        bp_set = set(bp_indices)
+        for nb in naive_bps:
+            if nb not in bp_set:
+                bp_indices.append(nb)
+        bp_indices = sorted(set(bp_indices))
+
+    # ------------------------------------------------------------------
+    # Step 1: Merge breakpoints that are too close in time
+    # ------------------------------------------------------------------
+    bp_indices = _enforce_min_duration(
+        t, w_cmd_opt, bp_indices, min_segment_duration
+    )
+
+    # ------------------------------------------------------------------
+    # Step 2: Enforce max speed
+    # ------------------------------------------------------------------
+    bp_indices, bp_values = _enforce_max_speed(
+        t, w_cmd_opt, bp_indices, max_speed
+    )
+
+    # ------------------------------------------------------------------
+    # Step 3: Reconstruct piecewise-linear trajectory
+    # ------------------------------------------------------------------
+    bp_times = t[bp_indices]
+    w_cmd_pwl = np.interp(t, bp_times, bp_values)
+
+    return w_cmd_pwl
+
+
+# ── Private helpers for piecewise_linearize_w_cmd ────────────────────────
+
+
+def _rdp(
+    t: np.ndarray, w: np.ndarray, tolerance: float
+) -> np.ndarray:
+    """Ramer-Douglas-Peucker algorithm (iterative).
+
+    Returns a boolean mask of length N indicating which points are
+    breakpoints.  Operates in (t, w) space with perpendicular distance.
+    """
+    N = len(w)
+    keep = np.zeros(N, dtype=bool)
+    keep[0] = True
+    keep[-1] = True
+
+    # Iterative stack-based RDP to avoid recursion limits on long arrays
+    stack = [(0, N - 1)]
+    while stack:
+        start, end = stack.pop()
+        if end - start < 2:
+            continue
+
+        # Perpendicular distance from line (start → end)
+        t0, w0 = t[start], w[start]
+        t1, w1 = t[end], w[end]
+        dt_se = t1 - t0
+        dw_se = w1 - w0
+        line_len = math.sqrt(dt_se ** 2 + dw_se ** 2)
+
+        if line_len < 1e-30:
+            # Degenerate segment — just use Euclidean from start
+            dists = np.sqrt((t[start + 1:end] - t0) ** 2 +
+                            (w[start + 1:end] - w0) ** 2)
+        else:
+            # Signed perpendicular distance
+            dists = np.abs(
+                dw_se * (t[start + 1:end] - t0) -
+                dt_se * (w[start + 1:end] - w0)
+            ) / line_len
+
+        idx_max = int(np.argmax(dists))
+        d_max = dists[idx_max]
+        split = start + 1 + idx_max
+
+        if d_max > tolerance:
+            keep[split] = True
+            stack.append((start, split))
+            stack.append((split, end))
+
+    return keep
+
+
+def _detect_naive_breakpoints(
+    t: np.ndarray, w_naive: np.ndarray
+) -> list[int]:
+    """Detect breakpoints in a piecewise-linear naive trajectory.
+
+    A breakpoint is where the slope changes — i.e., the second finite
+    difference is non-negligible.
+    """
+    if len(w_naive) < 3:
+        return []
+    dt = np.diff(t)
+    dw = np.diff(w_naive)
+    slopes = dw / np.maximum(dt, 1e-30)
+    slope_change = np.abs(np.diff(slopes))
+
+    # Threshold: 1% of max slope change (robust to floating-point noise)
+    thresh = max(np.max(slope_change) * 0.01, 1e-15)
+    bp_inner = np.where(slope_change > thresh)[0] + 1  # +1 for offset
+    return bp_inner.tolist()
+
+
+def _enforce_min_duration(
+    t: np.ndarray,
+    w_cmd: np.ndarray,
+    bp_indices: list[int],
+    min_dur: float,
+) -> list[int]:
+    """Remove breakpoints that create segments shorter than min_dur.
+
+    Uses a greedy forward pass: keep the first breakpoint, then only
+    accept the next one if it's at least min_dur after the last kept.
+    Among skipped candidates, the one closest to the midpoint of the
+    resulting merged segment is retained if it improves fidelity
+    (measured by max deviation).
+    """
+    if len(bp_indices) <= 2:
+        return bp_indices
+
+    kept = [bp_indices[0]]
+    i = 1
+    while i < len(bp_indices):
+        candidate = bp_indices[i]
+        dt_gap = t[candidate] - t[kept[-1]]
+
+        if dt_gap >= min_dur or candidate == bp_indices[-1]:
+            kept.append(candidate)
+            i += 1
+        else:
+            # Collect all candidates in this too-short cluster
+            cluster_start = i
+            while (i < len(bp_indices) - 1 and
+                   t[bp_indices[i]] - t[kept[-1]] < min_dur):
+                i += 1
+            # i now points to the first candidate that IS far enough
+            # (or the last breakpoint).  Accept it.
+            kept.append(bp_indices[i])
+            i += 1
+
+    # Deduplicate while preserving order
+    seen = set()
+    result = []
+    for idx in kept:
+        if idx not in seen:
+            seen.add(idx)
+            result.append(idx)
+    return result
+
+
+def _enforce_max_speed(
+    t: np.ndarray,
+    w_cmd: np.ndarray,
+    bp_indices: list[int],
+    max_speed: float,
+) -> tuple[list[int], np.ndarray]:
+    """Clamp breakpoint values so no segment exceeds max_speed.
+
+    If the slope from breakpoint A to breakpoint B exceeds max_speed,
+    the value at B is clamped so the ramp runs at exactly max_speed.
+
+    Returns:
+        (bp_indices, bp_values) where bp_values[i] is the (possibly
+        clamped) beadwidth value at bp_indices[i].
+    """
+    bp_vals = np.array([w_cmd[i] for i in bp_indices], dtype=np.float64)
+
+    if not np.isfinite(max_speed):
+        return bp_indices, bp_vals
+
+    for k in range(1, len(bp_indices)):
+        dt_seg = t[bp_indices[k]] - t[bp_indices[k - 1]]
+        if dt_seg <= 0:
+            continue
+        dw = bp_vals[k] - bp_vals[k - 1]
+        slope = abs(dw) / dt_seg
+        if slope > max_speed:
+            sign = 1.0 if dw >= 0 else -1.0
+            bp_vals[k] = bp_vals[k - 1] + sign * max_speed * dt_seg
+
+    return bp_indices, bp_vals

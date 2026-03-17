@@ -192,8 +192,15 @@ if __name__ == '__main__':
                 Q_cmd_opt = ilqr_results['Q_cmd_opt'],
                 w_cmd_opt = ilqr_results['w_cmd_opt'],)
 
-            from pathgen_bridge import smooth_Q_cmd
+            from pathgen_bridge import smooth_Q_cmd, piecewise_linearize_w_cmd
             Q_cmd_opt = smooth_Q_cmd(Q_cmd_opt_step)
+            w_cmd_opt = piecewise_linearize_w_cmd(
+                t = ilqr_results['t'],
+                w_cmd_opt = w_cmd_opt_step,
+                w_cmd_naive = ilqr_results['w_cmd_naive'],
+                max_speed = 0.1,  # m/s
+            )
+
 
             Q_out_opt, Q_vbn_opt, Q_res_opt = flow_predictor_lstm_windowed(
                 time_np = ilqr_results['t'],
